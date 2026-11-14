@@ -101,6 +101,8 @@ class SampleRequest(BaseModel):
     negative_prompt: str = ""
     dry_run: bool = False
     verify_image_url: bool = True       # fetch the still first; fail before spending
+    characters: list[str] = []          # e.g. ["lena"] -> use canon sheets as references
+    use_identity_prompt: bool = True    # append the fixed identity block to the prompt
 
 
 DEFAULT_IMAGE_PROMPT = """Cinematic vertical 9:16 poster frame, photoreal. Interior of a luxury gala ballroom at night, gold chandeliers, blurred crowd in evening wear behind shallow depth of field. Center frame: LENA CRUZ, 26, long black hair pulled back, sharp dark eyes, fair olive skin, wearing a black-and-white maid uniform with apron. Her head is turned slightly from a slap; one cheek is flushed. She is NOT crying - jaw set, eyes cold and steady, staring just past camera. To her left, out of focus: VIVIAN VEGA, 48, blonde bob, red lipstick, diamond necklace, hand still raised mid-slap. Dramatic amber key light from the left, deep cobalt shadows. 50mm look, film grain. No text, no watermark, no extra fingers."""
@@ -154,6 +156,17 @@ async def run_sample(job_id: str, req: SampleRequest) -> None:
     video_prompt = req.prompt or DEFAULT_VIDEO_PROMPT
     estimate = _cost_note(req.duration)
 
+    # Canon character sheets take priority over ad-hoc reference URLs.
+    from tools.character_refs import get as get_character, identity_block
+    canon = [c for c in (get_character(n) for n in req.characters) if c and c.file_id]
+    if canon:
+        req.reference_image_urls = [c.url for c in canon]
+        req.model_mode = "reference"
+        if req.use_identity_prompt:
+            block = identity_block([c.name.lower().split()[0] for c in canon])
+            if block and block not in video_prompt:
+                video_prompt = f"{block}\n\n{video_prompt}"
+
     try:
         if req.dry_run:
             plan = {
@@ -162,6 +175,7 @@ async def run_sample(job_id: str, req: SampleRequest) -> None:
                 "auto_audio": req.auto_audio,
                 "model_mode": req.model_mode,
                 "reference_image_urls": req.reference_image_urls,
+                "characters": req.characters,
                 "image": {
                     "provider": get_image_provider().primary,
                     "aspect_ratio": req.aspect_ratio,
@@ -607,6 +621,13 @@ async def render_clip(req: RenderRequest, background_tasks: BackgroundTasks):
     }
     background_tasks.add_task(run_render, job_id, req)
     return GenerateResponse(job_id=job_id)
+
+
+@app.get("/api/characters")
+async def list_characters():
+    """Canon character reference sheets (Drive URLs used for identity locking)."""
+    from tools.character_refs import describe
+    return describe()
 
 
 @app.get("/api/providers")

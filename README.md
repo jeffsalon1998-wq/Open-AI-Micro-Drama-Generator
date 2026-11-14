@@ -554,6 +554,27 @@ IMAGE_PROVIDER=gemini        # auto | gemini | a2e | muapi
 
 `GET /api/providers` reports `hosting.warning` when the configured base URL is not reachable from the internet (localhost/private IP), so a paid run fails loudly instead of handing a2e an unreachable frame.
 
+### Character sheets (identity lock)
+
+A turnaround sheet per main character keeps a face identical across shots and episodes. Sheets are public Drive files referenced by direct-download URL.
+
+```bash
+cd server
+python run_sample.py --characters lena      # sheet -> reference_assets + identity prompt
+```
+
+That call forces `reference-to-video`, attaches the sheet, and prepends a fixed identity block (appearance, costume, and "do not change facial structure, hair color, skin tone, eye color, or costume"). Canon refs are defined in `tools/character_refs.py`; `GET /api/characters` lists them with their Drive URLs and whether each is configured.
+
+| Character | Sheet | Status |
+|---|---|---|
+| Lena Cruz | `lena_character_sheet.png` | ✅ front / 3-4 / profile, maid costume |
+| Vivian Vega | — | ⬜ |
+| Marcus Chen | — | ⬜ |
+
+Configure a new sheet with `DRIVE_<NAME>_SHEET_FILE_ID` + `DRIVE_<NAME>_SHEET_URL`.
+
+> Costume changes break identity locking. Lena switches to a black power suit after Ep 1, so she needs a second sheet before Ep 2 or the maid dress will bleed into later episodes.
+
 ### Google Drive as the image host
 
 Drive works as the bridge between Gemini and a2e — free, persistent, and no tunnel needed. Two rules decide success:

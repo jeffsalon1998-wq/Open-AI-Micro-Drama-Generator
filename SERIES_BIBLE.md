@@ -39,6 +39,28 @@
 
 ---
 
+## Canon reference sheets (identity lock)
+
+Lena's face must survive 10 episodes. The generator locks identity with **reference-to-video**, conditioned on a turnaround sheet rather than a re-rolled first frame.
+
+| Character | Reference sheet | Drive file | Status |
+|---|---|---|---|
+| **Lena Cruz** | [`lena_character_sheet.png`](https://drive.google.com/uc?id=1e3CIa8yYDG2ePiXt88jJHBRlYb0PEneJ&export=download) | `1e3CIa8yYDG2ePiXt88jJHBRlYb0PEneJ` | ✅ front / three-quarter / profile |
+| Vivian Vega | — | — | ⬜ not generated |
+| Marcus Chen | — | — | ⬜ not generated |
+
+**Lena's locked look:** 26, long black hair in a neat low bun with loose temple strands, sharp dark brown eyes, strong eyebrows, fair olive skin, high cheekbones, 5'6", slim. Costume (Ep 1–4): black long-sleeved maid dress, white scalloped lace trim on apron and cuffs, crisp white collar, white apron, black flats, no jewelry.
+
+Regenerate her identity-safe shots with:
+```bash
+cd server && python run_sample.py --characters lena
+```
+The job attaches the sheet as `reference_assets`, forces `reference-to-video`, and prepends the identity block (appearance + costume + "do not change facial structure…") to the prompt.
+
+**Costume break:** after Ep 1 Lena changes into a black power suit. Generate a second sheet (`lena_suit_sheet.png`) before filming Ep 2, or the maid dress will leak into later episodes.
+
+---
+
 ## 10-Episode Arc
 
 ### Ep 1 — "You Fired the Wrong Maid"

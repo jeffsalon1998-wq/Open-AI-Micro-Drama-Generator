@@ -36,6 +36,8 @@ async def main() -> int:
                     help="use a2e reference-to-video instead of image-to-video")
     ap.add_argument("--duration", type=int, default=15)
     ap.add_argument("--aspect-ratio", default=os.environ.get("VIDEO_ASPECT_RATIO", "9:16"))
+    ap.add_argument("--characters", default="",
+                    help="comma-separated canon characters to lock identity (e.g. lena)")
     ap.add_argument("--prompt-file", help="file containing the video prompt")
     args = ap.parse_args()
 
@@ -65,11 +67,13 @@ async def main() -> int:
         "dry_run": args.dry_run,
         "aspect_ratio": args.aspect_ratio,
         "duration": args.duration,
-        "model_mode": "reference" if (args.reference_mode or ref_url) else "image",
+        "model_mode": "reference" if (args.reference_mode or ref_url or args.characters) else "image",
         "reference_image_urls": [ref_url] if ref_url else [],
         "skip_image": bool(ref_url),
         "image_url": ref_url or "",
     }
+    if args.characters:
+        body["characters"] = [n.strip().lower() for n in args.characters.split(",") if n.strip()]
     if prompt:
         body["prompt"] = prompt
 
