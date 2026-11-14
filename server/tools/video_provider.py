@@ -74,7 +74,7 @@ class MuAPIAdapter:
         return VideoResult(
             url=url,
             provider=self.name,
-            duration_seconds=duration,
+            duration_seconds=duration or 5,
             has_audio=False if "placeholder" in url or url.endswith("ForBiggerBlazes.mp4") else auto_audio,
         )
 
@@ -97,12 +97,14 @@ class A2EAdapter:
         self,
         prompt: str,
         image_url: str,
-        duration: int = 5,
+        duration: Optional[int] = None,
         aspect_ratio: str = "9:16",
         negative_prompt: Optional[str] = None,
         reference_urls: Optional[List[str]] = None,
         auto_audio: bool = True,
     ) -> VideoResult:
+        """Render one clip. Reference mode conditions on character portraits
+        (identity lock); otherwise the shot's first frame drives the motion."""
         refs = [u for u in (reference_urls or []) if u]
         if self.reference_mode and refs and self._gen.model_version.startswith("a2e-v2"):
             return await self._gen.generate_reference_to_video(

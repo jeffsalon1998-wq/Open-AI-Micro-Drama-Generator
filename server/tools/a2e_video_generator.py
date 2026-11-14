@@ -91,6 +91,7 @@ class A2EVideoGenerator:
         self.timeout = int(os.environ.get("A2E_TIMEOUT", timeout))
         self.max_submit_retries = max_submit_retries
         self.model_version = model_version or os.environ.get("A2E_MODEL_VERSION", "a2e-v2")
+        self.default_duration = int(os.environ.get("A2E_DEFAULT_DURATION", "15"))
 
     # ------------------------------------------------------------------ util
     @property
@@ -109,6 +110,12 @@ class A2EVideoGenerator:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+
+    @staticmethod
+    def _task_name(prefix: str = "microdrama") -> str:
+        """GUI-style timestamped task name, e.g. 11-14-2026 10:49:09."""
+        from datetime import datetime
+        return f"{prefix} {datetime.now().strftime('%m-%d-%Y %H:%M:%S')}"
 
     @staticmethod
     def _task_id_of(payload: Dict[str, Any]) -> str:
@@ -249,9 +256,9 @@ class A2EVideoGenerator:
         if not image_url:
             raise A2EError("image_url is required for image-to-video")
         model = model_version or self.model_version
-        duration = self._clamp_time(video_time)
+        duration = self._clamp_time(video_time or self.default_duration)
         payload: Dict[str, Any] = {
-            "name": name or "microdrama-shot",
+            "name": name or self._task_name(),
             "model_version": model,
             "generation_mode": "image-to-video",
             "image_url": image_url,
@@ -270,7 +277,7 @@ class A2EVideoGenerator:
         self,
         prompt: str,
         reference_urls: List[str],
-        video_time: int = 5,
+        video_time: Optional[int] = None,
         aspect_ratio: str = "9:16",
         negative_prompt: Optional[str] = None,
         auto_add_audio: Optional[bool] = None,
@@ -287,9 +294,9 @@ class A2EVideoGenerator:
         if not (prompt or "").strip():
             raise A2EError("reference-to-video requires a non-empty prompt")
 
-        duration = self._clamp_time(video_time, _REFERENCE_DURATIONS)
+        duration = self._clamp_time(video_time or self.default_duration, _REFERENCE_DURATIONS)
         payload: Dict[str, Any] = {
-            "name": name or "microdrama-reference-shot",
+            "name": name or self._task_name(),
             "model_version": model,
             "generation_mode": "reference-to-video",
             "prompt": self._safe_prompt(prompt),
@@ -314,7 +321,7 @@ class A2EVideoGenerator:
         prompt: str,
         image_url: str,
         end_image_url: str,
-        video_time: int = 5,
+        video_time: Optional[int] = None,
         aspect_ratio: str = "9:16",
         negative_prompt: Optional[str] = None,
         auto_add_audio: Optional[bool] = None,
@@ -324,9 +331,9 @@ class A2EVideoGenerator:
         """FLF2V: drive an exact opening *and* closing frame — use for cliffhanger cuts."""
         if not image_url or not end_image_url:
             raise A2EError("FLF2V requires both image_url and end_image_url")
-        duration = self._clamp_time(video_time)
+        duration = self._clamp_time(video_time or self.default_duration)
         payload: Dict[str, Any] = {
-            "name": name or "microdrama-flf2v-shot",
+            "name": name or self._task_name(),
             "model_version": model_version or self.model_version,
             "model_type": "FLF2V",
             "generation_mode": "image-to-video",
@@ -347,7 +354,7 @@ class A2EVideoGenerator:
         self,
         prompt: str,
         starting_video_url: str,
-        video_time: int = 5,
+        video_time: Optional[int] = None,
         aspect_ratio: str = "9:16",
         auto_add_audio: Optional[bool] = None,
         name: str = "",
@@ -356,10 +363,9 @@ class A2EVideoGenerator:
         """Continue an existing clip (5-20s). Useful for extending a hook beat."""
         if not starting_video_url:
             raise A2EError("starting_video_url is required for video extension")
-        duration = self._clamp_time(video_time)
-        duration = max(5, duration)
+        duration = max(5, self._clamp_time(video_time or self.default_duration))
         payload: Dict[str, Any] = {
-            "name": name or "microdrama-extend",
+            "name": name or self._task_name(),
             "model_version": model_version or self.model_version,
             "starting_video_url": starting_video_url,
             "prompt": self._safe_prompt(prompt),
@@ -373,7 +379,7 @@ class A2EVideoGenerator:
     async def generate_text_to_video(
         self,
         prompt: str,
-        video_time: int = 5,
+        video_time: Optional[int] = None,
         aspect_ratio: str = "9:16",
         negative_prompt: Optional[str] = None,
         auto_add_audio: Optional[bool] = None,
@@ -386,9 +392,9 @@ class A2EVideoGenerator:
         model = model_version or self.model_version
         if model not in ("a2e-v2", "a2e-v2-flash"):
             raise A2EError("text-to-video requires model_version a2e-v2 or a2e-v2-flash")
-        duration = self._clamp_time(video_time, _TEXT_DURATIONS)
+        duration = self._clamp_time(video_time or self.default_duration, _TEXT_DURATIONS)
         payload: Dict[str, Any] = {
-            "name": name or "microdrama-t2v",
+            "name": name or self._task_name(),
             "model_version": model,
             "generation_mode": "text-to-video",
             "prompt": self._safe_prompt(prompt),

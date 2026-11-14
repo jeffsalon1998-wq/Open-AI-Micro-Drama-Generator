@@ -27,12 +27,21 @@ class Script2VideoPipeline:
     # VIDEO_ASPECT_RATIO=16:9 when producing landscape cutdowns.
     ASPECT_RATIO = os.environ.get("VIDEO_ASPECT_RATIO", "9:16")
 
+    @staticmethod
+    def _shots_per_scene() -> int:
+        """Hard cap on paid clips per scene (SHOTS_PER_SCENE, 0 = LLM decides).
+
+        Every shot is one billed generation, so this is the main cost dial:
+        clips = scenes x shots.
+        """
+        return int(os.environ.get("SHOTS_PER_SCENE", "0"))
+
     def _clip_seconds(self, retention_mode: bool) -> int:
         """Clip length per shot. Retention mode renders longer continuous clips
         (a2e-v2 does up to 20s in one take, so hooks don't get chopped)."""
         if retention_mode:
-            return int(os.environ.get("RETENTION_CLIP_SECONDS", "10"))
-        return int(os.environ.get("CLIP_SECONDS", "5"))
+            return int(os.environ.get("RETENTION_CLIP_SECONDS", "15"))
+        return int(os.environ.get("CLIP_SECONDS", "10"))
 
     async def run(
         self,
@@ -46,6 +55,7 @@ class Script2VideoPipeline:
         base_progress: int = 30,
         progress_range: int = 60,
         retention_mode: bool = False,
+        max_shots: int = 0,
     ) -> str:
         """
         Run the script-to-video pipeline for a single scene.
@@ -83,6 +93,7 @@ class Script2VideoPipeline:
         shots_brief = await self.storyboard_artist.design_storyboard(
             script, characters, f"{user_requirement}. Style: {style}",
             retention_mode=retention_mode,
+            max_shots=max_shots or self._shots_per_scene(),
         )
 
         shots: List[ShotDescription] = [

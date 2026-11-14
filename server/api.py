@@ -68,10 +68,31 @@ class GenerateRequest(BaseModel):
     genre: str = "billionaire_revenge"
     episode_number: int = 1
     series_bible: str = ""    # paste previous bible JSON/text to keep continuity
+    # Cost guards — every shot is one billed video generation.
+    max_scenes: int = 0       # 0 = let the screenwriter decide
+    max_shots: int = 0        # 0 = SHOTS_PER_SCENE env or LLM default
 
 
 class GenerateResponse(BaseModel):
     job_id: str
+
+
+class RenderRequest(BaseModel):
+    """Render one clip straight from a finished prompt — no screenwriter involved.
+
+    Built for hand-authored, timecoded a2e prompts (the 0:00-0:04 beat style).
+    """
+
+    prompt: str
+    mode: str = "reference"        # reference | image | flf2v | text
+    reference_image_urls: list[str] = []   # mode=reference
+    image_url: str = ""                    # mode=image / flf2v
+    end_image_url: str = ""                # mode=flf2v
+    duration: int = 0                      # 0 = A2E_DEFAULT_DURATION
+    aspect_ratio: str = ""                 # "" = VIDEO_ASPECT_RATIO
+    auto_audio: bool | None = None
+    negative_prompt: str = ""
+    name: str = ""
 
 
 class JobResult(BaseModel):
@@ -119,6 +140,7 @@ async def run_pipeline(job_id: str, req: GenerateRequest) -> None:
                 base_progress=15,
                 progress_range=80,
                 retention_mode=req.retention_mode,
+                max_shots=req.max_shots,
             )
         else:
             # Idea2Video: full agentic pipeline
@@ -133,6 +155,8 @@ async def run_pipeline(job_id: str, req: GenerateRequest) -> None:
                 genre=req.genre,
                 episode_number=req.episode_number,
                 series_bible=req.series_bible or None,
+                max_shots=req.max_shots,
+                max_scenes=req.max_scenes,
             )
 
         # Convert local path to URL
@@ -168,12 +192,109 @@ async def run_pipeline(job_id: str, req: GenerateRequest) -> None:
         await queue.put(None)
 
 
+async def run_render(job_id: str, req: RenderRequest) -> None:
+    """Render a single clip from a provided prompt and cache it locally."""
+    from tools.a2e_video_generator import A2EError, A2EVideoGenerator
+    from utils.video import download_video
+
+    job = jobs[job_id]
+    queue: asyncio.Queue = job["queue"]
+
+    async def emit(stage: str, message: str, progress: int) -> None:
+        event = {"type": "progress", "stage": stage, "message": message, "progress": progress}
+        job["events"].append(event)
+        await queue.put(event)
+
+    try:
+        gen = A2EVideoGenerator()
+        await emit("video", f"Submitting to a2e ({req.mode}, {req.duration or 'default'}s)...", 10)
+
+        kwargs = dict(
+            prompt=req.prompt,
+            video_time=req.duration or None,
+            aspect_ratio=req.aspect_ratio or os.environ.get("VIDEO_ASPECT_RATIO", "9:16"),
+            negative_prompt=req.negative_prompt or None,
+            auto_add_audio=req.auto_audio,
+            name=req.name or None,
+        )
+
+        if req.mode == "reference":
+            result = await gen.generate_reference_to_video(
+                reference_urls=req.reference_image_urls, **kwargs
+            )
+        elif req.mode == "flf2v":
+            result = await gen.generate_first_last_frame(
+                image_url=req.image_url, end_image_url=req.end_image_url, **kwargs
+            )
+        elif req.mode == "text":
+            result = await gen.generate_text_to_video(**kwargs)
+        else:
+            result = await gen.generate_image_to_video(image_url=req.image_url, **kwargs)
+
+        await emit("video", f"Task {result.task_id} completed — downloading", 80)
+
+        # a2e only keeps results 3 days, so cache the file with the job.
+        out_dir = OUTPUTS_DIR / job_id
+        out_dir.mkdir(parents=True, exist_ok=True)
+        local_path = str(out_dir / "clip.mp4")
+        await download_video(result.url, local_path)
+
+        job["status"] = "completed"
+        job["video_url"] = f"/outputs/{job_id}/clip.mp4"
+        complete = {
+            "type": "complete",
+            "video_url": job["video_url"],
+            "source_url": result.url,
+            "task_id": result.task_id,
+            "provider": result.provider,
+            "duration_seconds": result.duration_seconds,
+            "has_audio": result.has_audio,
+            "progress": 100,
+        }
+        job["events"].append(complete)
+        await queue.put(complete)
+
+    except A2EError as exc:
+        job["status"] = "failed"
+        job["error"] = str(exc)
+        event = {"type": "error", "message": str(exc), "progress": -1}
+        job["events"].append(event)
+        await queue.put(event)
+    except Exception as exc:
+        job["status"] = "failed"
+        job["error"] = str(exc)
+        event = {"type": "error", "message": str(exc), "progress": -1}
+        job["events"].append(event)
+        await queue.put(event)
+    finally:
+        await queue.put(None)
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "service": "microdrama-api"}
+
+
+@app.post("/api/render", response_model=GenerateResponse)
+async def render_clip(req: RenderRequest, background_tasks: BackgroundTasks):
+    """Render one clip from a hand-written prompt via a2e (no LLM needed).
+
+    Poll ``GET /api/status/{job_id}`` for progress; the completed event carries
+    both the cached local URL and the original a2e ``source_url``.
+    """
+    job_id = str(uuid.uuid4())
+    jobs[job_id] = {
+        "status": "running",
+        "events": [],
+        "video_url": None,
+        "error": None,
+        "queue": asyncio.Queue(),
+    }
+    background_tasks.add_task(run_render, job_id, req)
+    return GenerateResponse(job_id=job_id)
 
 
 @app.get("/api/providers")
@@ -196,7 +317,9 @@ async def providers():
         "muapi": {"configured": router.muapi.available},
         "aspect_ratio": os.environ.get("VIDEO_ASPECT_RATIO", "9:16"),
         "clip_seconds": int(os.environ.get("CLIP_SECONDS", "5")),
-        "retention_clip_seconds": int(os.environ.get("RETENTION_CLIP_SECONDS", "10")),
+        "retention_clip_seconds": int(os.environ.get("RETENTION_CLIP_SECONDS", "15")),
+        "shots_per_scene": int(os.environ.get("SHOTS_PER_SCENE", "0")),
+        "a2e_default_duration": int(os.environ.get("A2E_DEFAULT_DURATION", "15")),
         "target_resolution": os.environ.get("TARGET_RESOLUTION", "720x1280"),
     }
 

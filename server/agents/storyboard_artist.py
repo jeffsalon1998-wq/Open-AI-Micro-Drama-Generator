@@ -57,6 +57,7 @@ class StoryboardArtist:
         characters: List[CharacterInScene],
         user_requirement: str,
         retention_mode: bool = False,
+        max_shots: int = 0,
     ) -> List[ShotBriefDescription]:
         system_prompt = (
             "You are a professional storyboard artist and cinematographer. "
@@ -96,9 +97,22 @@ Return a JSON object with this exact structure:
 }}
 
 Rules:
-- Create 3-5 shots per scene
-- Start with an establishing shot, include action shots, end with a closing shot
-""" + (f"\n{STORYBOARD_RETENTION_RULES}\n- Shot 1 MUST be the HOOK shot (close-up/shocking action, not a wide). Final shot MUST be the CLIFFHANGER shot.\n" if retention_mode else "")
+- Create {shot_range} shots per scene
+- Every shot must contain a visual event (action, reveal, reaction) — no empty scenery
+{retention_suffix}"""
+
+        # Cost guard: every shot is one paid clip, so cap what the LLM may return.
+        shot_range = "3-5" if not max_shots else f"exactly {max_shots}"
+        retention_suffix = (
+            f"\n{STORYBOARD_RETENTION_RULES}\n"
+            "- Shot 1 MUST be the HOOK shot (close-up/shocking action, not a wide). "
+            "Final shot MUST be the CLIFFHANGER shot.\n"
+            if retention_mode
+            else ""
+        )
+        prompt = prompt.replace("{shot_range}", shot_range).replace(
+            "{retention_suffix}", retention_suffix
+        )
 
         raw = await self.llm.complete(
             prompt, system_prompt=system_prompt, timeout=120, fallback=_FALLBACK_STORYBOARD
@@ -109,4 +123,8 @@ Rules:
             if raw.startswith("json"):
                 raw = raw[4:]
         data = json.loads(raw)
-        return [ShotBriefDescription(**s) for s in data.get("shots", [])]
+        shots = [ShotBriefDescription(**s) for s in data.get("shots", [])]
+        if max_shots and len(shots) > max_shots:
+            print(f"[storyboard] trimming {len(shots)} shots to max {max_shots} (cost guard)")
+            shots = shots[:max_shots]
+        return shots

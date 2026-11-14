@@ -499,6 +499,53 @@ TARGET_RESOLUTION=720x1280
 
 `auto` uses a2e when `A2E_API_KEY` is set and MuAPI otherwise; with `VIDEO_FALLBACK=true` a mid-run failure falls through to the other engine instead of killing the scene. Check what will be used with `GET /api/providers`.
 
+### Matching the a2e web UI
+
+The settings in the a2e GUI map to config like this:
+
+| a2e UI control | Config |
+|---|---|
+| Model: `A2E.AI V2 R2V` | `A2E_MODEL_VERSION=a2e-v2` (+ `A2E_REFERENCE_MODE=true` for R2V) |
+| Model Version: `Standard` | `a2e-v2` (`a2e-v2-flash` is the cheaper variant) |
+| Duration: `15s` | `A2E_DEFAULT_DURATION=15` / `RETENTION_CLIP_SECONDS=15` |
+| Aspect Ratio: `4:3` | `VIDEO_ASPECT_RATIO` (`9:16` for vertical drama) |
+| Sound: `On` | `A2E_AUTO_AUDIO=true` |
+| Reference Files | character portraits → `reference_assets` |
+| Number of Outputs: `1` | fixed at 1 (extra outputs are extra coins) |
+| Name: timestamp | auto-generated per task |
+
+**One deliberate difference:** the GUI screenshot uses `4:3` with a prompt that asks for "3:4 portrait". Those contradict each other. `VIDEO_ASPECT_RATIO` is authoritative and defaults to `9:16` — don't set `4:3` unless you actually want landscape-ish output.
+
+### Cost control
+
+Every shot is one billed generation, so spend is `scenes x shots x seconds`:
+
+| Setting | Meaning |
+|---|---|
+| `SHOTS_PER_SCENE=3` | Hard cap on clips per scene (0 = LLM decides) |
+| `max_scenes` (API) | Trim the episode to N scenes |
+| `max_shots` (API) | Override the per-scene shot cap for one request |
+| `RETENTION_CLIP_SECONDS` / `CLIP_SECONDS` | Clip length per generation |
+
+A 15s clip costs roughly 120 coins at the time of writing, so a 6-clip episode is ~720 coins. Start with `SHOTS_PER_SCENE=2` and one scene to validate look-and-feel before rendering a full episode.
+
+### `POST /api/render` — prompt straight to video
+
+For hand-authored prompts (the timecoded `0:00–0:04` beat style), skip the screenwriter entirely:
+
+```json
+{
+  "prompt": "Create an exactly 15-second cinematic 2D neo-noir... 0:00-0:04 ...",
+  "mode": "reference",
+  "reference_image_urls": ["https://.../character.png"],
+  "duration": 15,
+  "aspect_ratio": "3:4",
+  "auto_audio": true
+}
+```
+
+`mode` is `reference` | `image` | `flf2v` | `text`. Returns `{ job_id }`; stream `GET /api/status/{job_id}`. The `complete` event includes the cached `video_url` plus a2e's `source_url` and `task_id`. Results are downloaded to `outputs/{job_id}/clip.mp4` because **a2e only retains results for 3 days**.
+
 ### a2e endpoints used
 
 | Purpose | Endpoint |

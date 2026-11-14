@@ -30,6 +30,8 @@ class Idea2VideoPipeline:
         genre: str = "billionaire_revenge",
         episode_number: int = 1,
         series_bible: Optional[str] = None,
+        max_shots: int = 0,
+        max_scenes: int = 0,
     ) -> str:
         """
         Full pipeline: idea → story → scenes → videos → final concatenated video.
@@ -89,6 +91,16 @@ class Idea2VideoPipeline:
         if not scene_scripts:
             raise RuntimeError("Screenwriter produced no scene scripts")
 
+        # Budget guard: scenes x shots = paid clips.
+        if max_scenes and len(scene_scripts) > max_scenes:
+            print(f"[pipeline] trimming {len(scene_scripts)} scenes to {max_scenes}")
+            await progress_callback(
+                "screenwriter",
+                f"Trimming to {max_scenes} scenes (budget guard)...",
+                28,
+            )
+            scene_scripts = scene_scripts[:max_scenes]
+
         # Save scripts for reuse in next episode / manual review
         (outputs_dir / "scene_scripts.json").write_text(
             json.dumps(scene_scripts, indent=2), encoding="utf-8"
@@ -117,6 +129,7 @@ class Idea2VideoPipeline:
                     base_progress=base_progress,
                     progress_range=progress_per_scene,
                     retention_mode=retention_mode,
+                    max_shots=max_shots,
                 )
                 scene_video_paths.append(scene_video)
             except Exception as e:
