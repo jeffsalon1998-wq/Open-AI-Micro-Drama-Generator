@@ -529,7 +529,41 @@ curl -X POST localhost:8000/api/sample -H 'Content-Type: application/json' -d '{
 
 Defaults: `aspect_ratio=9:16`, `duration=15`, `auto_audio=true`, `model_mode=image`. The prompt is the Episode 1 hook (slap → "You're fired, thief!" → "You just fired the owner"), so the sample doubles as a real asset. Stream progress on `GET /api/status/{job_id}`; the clip is cached at `outputs/{job_id}/sample.mp4`.
 
-### Images come from the site's own generator
+### Images: Gemini (default)
+
+Image generation is **Gemini only** — `gemini-2.5-flash-image` ("Nano Banana") via `:generateContent`. Video still comes from a2e; Gemini never renders motion.
+
+```bash
+GEMINI_API_KEY=...
+GEMINI_IMAGE_MODEL=gemini-2.5-flash-image
+IMAGE_PROVIDER=gemini        # auto | gemini | a2e | muapi
+```
+
+- Text-to-image and image editing (character references pass in as `inlineData`).
+- `imageConfig.aspectRatio` drives framing: `1:1 2:3 3:2 3:4 4:3 4:5 5:4 9:16 16:9 21:9`.
+- Requests force `responseModalities: ["IMAGE"]` so no chat text comes back.
+- Safety blocks surface as a readable error (`blockReason: SAFETY`) instead of an empty file.
+
+**The bridge problem:** Gemini returns base64 bytes, but a2e's video API only accepts a **public image URL**, and a2e has no upload endpoint. So every Gemini image is published before it is used:
+
+| `IMAGE_HOST_MODE` | Behaviour |
+|---|---|
+| `serve` (default) | Copied to `IMAGE_SERVE_DIR` (mounted at `/images`) and returned as `PUBLIC_BASE_URL/images/{job}/{file}` |
+| `imgur` | Uploaded to Imgur via `IMGUR_CLIENT_ID` |
+| *(public dir)* | `IMAGE_HOST_PUBLIC_DIR` + `PUBLIC_BASE_URL` when a CDN/static mount already exists |
+
+`GET /api/providers` reports `hosting.warning` when the configured base URL is not reachable from the internet (localhost/private IP), so a paid run fails loudly instead of handing a2e an unreachable frame.
+
+### `POST /api/image` — free style test
+
+```bash
+curl -X POST localhost:8000/api/image -H 'Content-Type: application/json' \
+  -d '{"prompt": "Lena Cruz, 26, maid uniform, gala ballroom, 9:16 cinematic", "aspect_ratio": "9:16"}'
+```
+
+Gemini only, **0 a2e coins**. Use it to lock the look of a character before paying for video.
+
+### Images come from the site's own generator (fallback)
 
 `IMAGE_PROVIDER = auto | a2e | muapi` (auto → a2e when `A2E_API_KEY` is set). Stills use a2e's text-to-image API, so the whole pipeline runs on one site and one balance:
 

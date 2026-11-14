@@ -39,6 +39,11 @@ OUTPUTS_DIR.mkdir(exist_ok=True)
 
 app.mount("/outputs", StaticFiles(directory="outputs"), name="outputs")
 
+# Gemini returns bytes; IMAGE_HOST_MODE=serve exposes them under PUBLIC_BASE_URL.
+IMAGE_SERVE_DIR = Path(os.environ.get("IMAGE_SERVE_DIR", "outputs/images"))
+IMAGE_SERVE_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/images", StaticFiles(directory=str(IMAGE_SERVE_DIR)), name="images")
+
 
 # ---------------------------------------------------------------------------
 # In-memory job store
@@ -118,17 +123,16 @@ CAMERA: Handheld at first, then locked-off slow push-in. Vertical framing, faces
 No morphing faces, no changing hair or eye color, no extra characters, no text overlay, no watermark, no camera shake after 0:07."""
 
 
-def _coin_estimate(duration: int) -> dict:
-    """Rough spend preview, from the UI: 120 coins for a 15s generation."""
+def _cost_note(duration: int) -> dict:
+    """Spend preview. Gemini images are free-tier; only video costs coins."""
     per_second = float(os.environ.get("A2E_COINS_PER_SECOND", "8"))
-    video = int(round(duration * per_second))
-    image = int(os.environ.get("A2E_COINS_PER_IMAGE", "10"))
     return {
-        "image": image,
-        "video": video,
-        "total": image + video,
-        "assumption": f"{per_second:g} coins/second video, {image} coins/image "
-                      "(calibrate with A2E_COINS_PER_SECOND / A2E_COINS_PER_IMAGE)",
+        "video_coins": int(round(duration * per_second)),
+        "video_coin_note": (
+            f"a2e video only: {per_second:g} coins/second "
+            "(from the UI's 120 coins for 15s; calibrate with A2E_COINS_PER_SECOND)"
+        ),
+        "image": "Gemini free tier (set GEMINI_IMAGE_MODEL; billed to Google, not your a2e coins)",
     }
 
 
@@ -147,7 +151,7 @@ async def run_sample(job_id: str, req: SampleRequest) -> None:
 
     image_prompt = req.image_prompt or DEFAULT_IMAGE_PROMPT
     video_prompt = req.prompt or DEFAULT_VIDEO_PROMPT
-    estimate = _coin_estimate(req.duration)
+    estimate = _cost_note(req.duration)
 
     try:
         if req.dry_run:
@@ -181,8 +185,8 @@ async def run_sample(job_id: str, req: SampleRequest) -> None:
 
         await emit(
             "portraits",
-            f"Estimated spend: ~{estimate['total']} coins "
-            f"(image ~{estimate['image']}, video ~{estimate['video']})",
+            f"Planned spend: ~{estimate['video_coins']} a2e coins for the clip, "
+            f"image via Gemini ({estimate['image']})",
             5,
         )
 
@@ -193,11 +197,20 @@ async def run_sample(job_id: str, req: SampleRequest) -> None:
             image_url = req.reference_image_urls[0]
             await emit("frames", "Using supplied reference still (no image generation)", 25)
         else:
-            await emit("frames", "Generating the hook frame in 9:16...", 10)
-            image_url = await get_image_provider().generate_image(
-                image_prompt, aspect_ratio=req.aspect_ratio
+            await emit("frames", f"Generating the hook frame with Gemini in {req.aspect_ratio}...", 10)
+            image_url = await get_image_provider(api_key=None).generate_image(
+                image_prompt,
+                aspect_ratio=req.aspect_ratio,
+                job_id=job_id,
+                out_path=str(OUTPUTS_DIR / job_id / "frame.png"),
             )
-            await emit("frames", f"Hook frame ready: {image_url[:90]}", 35, image_url=image_url)
+            await emit(
+                "frames",
+                f"Hook frame ready: {image_url[:90]}",
+                35,
+                image_url=image_url,
+                cached_frame=f"/outputs/{job_id}/frame.png",
+            )
 
         await emit("video", f"Rendering one {req.duration}s clip in {req.aspect_ratio}...", 40)
         negative = req.negative_prompt or (
@@ -255,6 +268,72 @@ async def run_sample(job_id: str, req: SampleRequest) -> None:
         await queue.put(event)
     finally:
         await queue.put(None)
+
+
+class ImageRequest(BaseModel):
+    """Gemini image generation only — costs zero a2e coins."""
+
+    prompt: str
+    aspect_ratio: str = "9:16"
+    reference_images: list[str] = []
+    name: str = ""
+
+
+async def run_image_only(job_id: str, req: ImageRequest) -> None:
+    from tools.image_host import publish_image
+    from tools.video_provider import get_image_provider
+
+    job = jobs[job_id]
+    queue: asyncio.Queue = job["queue"]
+
+    try:
+        event = {"type": "progress", "stage": "frames",
+                 "message": f"Generating image with Gemini in {req.aspect_ratio}...",
+                 "progress": 10}
+        job["events"].append(event)
+        await queue.put(event)
+
+        out_path = str(OUTPUTS_DIR / job_id / "image.png")
+        url = await get_image_provider(api_key=None).generate_image(
+            req.prompt,
+            aspect_ratio=req.aspect_ratio,
+            reference_url=(req.reference_images or [None])[0],
+            job_id=job_id,
+            out_path=out_path,
+        )
+
+        job["status"] = "completed"
+        job["video_url"] = None
+        done = {
+            "type": "complete",
+            "image_url": url,
+            "cached_image": f"/outputs/{job_id}/image.png",
+            "local_path": out_path,
+            "aspect_ratio": req.aspect_ratio,
+            "provider": "gemini",
+            "a2e_coins_spent": 0,
+            "progress": 100,
+        }
+        job["events"].append(done)
+        await queue.put(done)
+    except Exception as exc:
+        job["status"] = "failed"
+        job["error"] = str(exc)
+        err = {"type": "error", "message": str(exc), "progress": -1}
+        job["events"].append(err)
+        await queue.put(err)
+    finally:
+        await queue.put(None)
+
+
+@app.post("/api/image", response_model=GenerateResponse)
+async def generate_image_only(req: ImageRequest, background_tasks: BackgroundTasks):
+    """Gemini image only (free tier, no a2e spend). Use this to test style first."""
+    job_id = str(uuid.uuid4())
+    jobs[job_id] = {"status": "running", "events": [], "video_url": None,
+                    "error": None, "queue": asyncio.Queue()}
+    background_tasks.add_task(run_image_only, job_id, req)
+    return GenerateResponse(job_id=job_id)
 
 
 @app.post("/api/sample", response_model=GenerateResponse)
@@ -473,14 +552,17 @@ async def run_render(job_id: str, req: RenderRequest) -> None:
 # Endpoints
 # ---------------------------------------------------------------------------
 def _image_provider_info() -> dict:
+    from tools.image_host import describe
     from tools.video_provider import ImageProviderRouter
     r = ImageProviderRouter()
     return {
         "requested": r.requested,
         "effective": r.primary,
+        "gemini": {"configured": r.gemini.configured, "model": r.gemini.model},
         "a2e": {"configured": r.a2e.configured, "model_type": r.a2e.model_type,
                 "resolution": r.a2e.resolution},
         "muapi": {"configured": bool(r._muapi_key)},
+        "hosting": describe(),
     }
 
 

@@ -26,6 +26,8 @@ import os
 from typing import List, Optional
 
 from tools.a2e_image_generator import A2EImageGenerator
+from tools.gemini_image_generator import GeminiImageGenerator
+from tools.image_host import publish_image
 from tools.a2e_video_generator import A2EVideoGenerator, A2EError, VideoResult
 from tools.muapi_video_generator import MuAPIVideoGenerator
 
@@ -179,16 +181,19 @@ def get_video_provider(api_key: Optional[str] = None) -> VideoProviderRouter:
 
 
 class ImageProviderRouter:
-    """Same idea for stills: a2e's own image generator, else MuAPI.
+    """Stills only. Gemini is the default image engine; a2e and MuAPI are fallbacks.
 
-    IMAGE_PROVIDER = auto | a2e | muapi   (auto -> a2e when A2E_API_KEY is set)
-    The a2e site's image models (a2e auto / zimage / seedream) are preferred so the
-    whole pipeline can run on a single site and a single paid balance.
+    IMAGE_PROVIDER = auto | gemini | a2e | muapi
+        auto -> gemini when GEMINI_API_KEY is set, else a2e, else muapi
+
+    Gemini returns bytes, so every result is published to a URL first
+    (tools/image_host.publish_image) — video providers fetch by URL.
     """
 
     name = "image-router"
 
     def __init__(self, api_key: Optional[str] = None):
+        self.gemini = GeminiImageGenerator(api_key=os.environ.get("GEMINI_API_KEY", ""))
         self.a2e = A2EImageGenerator(api_key=os.environ.get("A2E_API_KEY", ""))
         self._muapi_key = api_key or os.environ.get("MUAPI_KEY", "")
         self._muapi = None
@@ -205,18 +210,35 @@ class ImageProviderRouter:
 
     @property
     def primary(self):
-        if self.requested == "a2e":
-            return "a2e"
-        if self.requested == "muapi":
-            return "muapi"
+        if self.requested in ("gemini", "a2e", "muapi"):
+            return self.requested
+        if self.gemini.configured:
+            return "gemini"
         return "a2e" if self.a2e.configured else "muapi"
 
     @property
     def ready(self) -> bool:
-        return self.a2e.configured or bool(self._muapi_key)
+        return self.gemini.configured or self.a2e.configured or bool(self._muapi_key)
 
-    async def generate_image(self, prompt: str, aspect_ratio: str = "9:16", reference_url: Optional[str] = None) -> str:
+    async def generate_image(
+        self,
+        prompt: str,
+        aspect_ratio: str = "9:16",
+        reference_url: Optional[str] = None,
+        job_id: str = "shared",
+        out_path: str = "",
+    ) -> str:
         """Return an image URL. Character references are honoured where supported."""
+        if self.primary == "gemini":
+            result = await self.gemini.generate_image(
+                prompt,
+                aspect_ratio=aspect_ratio,
+                input_images=[reference_url] if reference_url else None,
+                out_path=out_path,
+            )
+            print(f"[image] gemini {result.path} ({aspect_ratio})")
+            # Gemini is byte-based: publish so the video provider can fetch it.
+            return await publish_image(result.path, job_id=job_id)
         if self.primary == "a2e":
             if reference_url:
                 result = await self.a2e.generate_image(
@@ -239,6 +261,7 @@ def get_image_provider(api_key: Optional[str] = None) -> ImageProviderRouter:
 
 __all__ = [
     "A2EAdapter",
+    "GeminiImageGenerator",
     "ImageProviderRouter",
     "get_image_provider",
     "A2EError",
