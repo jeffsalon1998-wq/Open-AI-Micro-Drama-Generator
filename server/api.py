@@ -102,6 +102,7 @@ class SampleRequest(BaseModel):
     dry_run: bool = False
     verify_image_url: bool = True       # fetch the still first; fail before spending
     characters: list[str] = []          # e.g. ["lena"] -> use canon sheets as references
+    episode: int = 1                    # selects the costume (Lena: maid Ep 1-4, suit Ep 2+)
     use_identity_prompt: bool = True    # append the fixed identity block to the prompt
 
 
@@ -158,12 +159,17 @@ async def run_sample(job_id: str, req: SampleRequest) -> None:
 
     # Canon character sheets take priority over ad-hoc reference URLs.
     from tools.character_refs import get as get_character, identity_block
-    canon = [c for c in (get_character(n) for n in req.characters) if c and c.file_id]
+    canon = [
+        c for c in (get_character(n, episode=req.episode) for n in req.characters)
+        if c and c.file_id
+    ]
     if canon:
         req.reference_image_urls = [c.url for c in canon]
         req.model_mode = "reference"
         if req.use_identity_prompt:
-            block = identity_block([c.name.lower().split()[0] for c in canon])
+            block = identity_block(
+                [c.name.lower().split()[0] for c in canon], episode=req.episode
+            )
             if block and block not in video_prompt:
                 video_prompt = f"{block}\n\n{video_prompt}"
 
@@ -176,6 +182,7 @@ async def run_sample(job_id: str, req: SampleRequest) -> None:
                 "model_mode": req.model_mode,
                 "reference_image_urls": req.reference_image_urls,
                 "characters": req.characters,
+                "episode": req.episode,
                 "image": {
                     "provider": get_image_provider().primary,
                     "aspect_ratio": req.aspect_ratio,
@@ -626,8 +633,8 @@ async def render_clip(req: RenderRequest, background_tasks: BackgroundTasks):
 @app.get("/api/characters")
 async def list_characters():
     """Canon character reference sheets (Drive URLs used for identity locking)."""
-    from tools.character_refs import describe
-    return describe()
+    from tools.character_refs import describe, wardrobe_map
+    return {**describe(), "wardrobe": wardrobe_map()}
 
 
 @app.get("/api/providers")

@@ -565,15 +565,21 @@ python run_sample.py --characters lena      # sheet -> reference_assets + identi
 
 That call forces `reference-to-video`, attaches the sheet, and prepends a fixed identity block (appearance, costume, and "do not change facial structure, hair color, skin tone, eye color, or costume"). Canon refs are defined in `tools/character_refs.py`; `GET /api/characters` lists them with their Drive URLs and whether each is configured.
 
-| Character | Sheet | Status |
+| Character | Sheet | Window |
 |---|---|---|
-| Lena Cruz | `lena_character_sheet.png` | ✅ front / 3-4 / profile, maid costume |
-| Vivian Vega | — | ⬜ |
+| Lena Cruz | `lena_character_sheet.png` | Ep 1 only (maid) |
+| Lena Cruz | `lena_suit_sheet.png` | Ep 2–10 (power suit) |
+| Vivian Vega | `vivian_character_sheet.png` | Ep 1–10 (gown) |
 | Marcus Chen | — | ⬜ |
 
-Configure a new sheet with `DRIVE_<NAME>_SHEET_FILE_ID` + `DRIVE_<NAME>_SHEET_URL`.
+Costume changes are handled by **wardrobe windows**, not by prompting around them: each sheet declares an episode range and the job resolves the right sheet *and* the matching costume text together.
 
-> Costume changes break identity locking. Lena switches to a black power suit after Ep 1, so she needs a second sheet before Ep 2 or the maid dress will bleed into later episodes.
+```bash
+python run_sample.py --characters lena --episode 1    # maid sheet + maid prompt
+python run_sample.py --characters lena --episode 3    # suit sheet + suit prompt
+```
+
+That prevents the failure mode where the reference image says maid and the prompt says suit. Configure a new sheet with `DRIVE_<NAME>_SHEET_FILE_ID` + `DRIVE_<NAME>_SHEET_URL`.
 
 ### Google Drive as the image host
 

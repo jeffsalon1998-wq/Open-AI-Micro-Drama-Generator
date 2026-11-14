@@ -41,23 +41,32 @@
 
 ## Canon reference sheets (identity lock)
 
-Lena's face must survive 10 episodes. The generator locks identity with **reference-to-video**, conditioned on a turnaround sheet rather than a re-rolled first frame.
+Lena's face must survive 10 episodes. The generator locks identity with **reference-to-video**, conditioned on a turnaround sheet instead of a re-rolled first frame.
 
-| Character | Reference sheet | Drive file | Status |
+| Character | Sheet | Costume window | Drive file |
 |---|---|---|---|
-| **Lena Cruz** | [`lena_character_sheet.png`](https://drive.google.com/uc?id=1e3CIa8yYDG2ePiXt88jJHBRlYb0PEneJ&export=download) | `1e3CIa8yYDG2ePiXt88jJHBRlYb0PEneJ` | ✅ front / three-quarter / profile |
-| Vivian Vega | — | — | ⬜ not generated |
+| **Lena Cruz** | `lena_character_sheet.png` | **Ep 1 only** — maid uniform | `1e3CIa8yYDG2ePiXt88jJHBRlYb0PEneJ` |
+| **Lena Cruz** | `lena_suit_sheet.png` | **Ep 2–10** — black power suit | `1oUoF051h0r46i0ADbjCJPjAWZc0-NBoK` |
+| **Vivian Vega** | `vivian_character_sheet.png` | Ep 1–10 — black gown, diamonds | `1e1d1vDrRHR0Ybp_qu_wP6nxibZPofZ-q` |
 | Marcus Chen | — | — | ⬜ not generated |
 
-**Lena's locked look:** 26, long black hair in a neat low bun with loose temple strands, sharp dark brown eyes, strong eyebrows, fair olive skin, high cheekbones, 5'6", slim. Costume (Ep 1–4): black long-sleeved maid dress, white scalloped lace trim on apron and cuffs, crisp white collar, white apron, black flats, no jewelry.
+**Locked appearance.** Lena: 26, long black hair in a neat low bun with loose temple strands, sharp dark brown eyes, strong brows, fair olive skin, high cheekbones, 5'6", slim. Vivian: 48, blonde jaw-length bob, pale blue eyes, sculpted cheekbones, matte red lipstick, tall and lean.
 
-Regenerate her identity-safe shots with:
+**Costume windows are enforced in code** (`tools/character_refs.py`), so the sheet and the prompt always agree:
+
+| Episode | Lena's sheet | Lena's costume |
+|---|---|---|
+| 1 | maid sheet | black maid dress, scalloped lace apron, white collar, flats |
+| 2–10 | suit sheet | black power suit, white silk blouse, pointed heels, gold studs |
+
 ```bash
-cd server && python run_sample.py --characters lena
+cd server
+python run_sample.py --characters lena --episode 1      # maid, the hook
+python run_sample.py --characters lena --episode 3      # power suit
+python run_sample.py --characters lena,vivian --episode 1   # two reference assets
 ```
-The job attaches the sheet as `reference_assets`, forces `reference-to-video`, and prepends the identity block (appearance + costume + "do not change facial structure…") to the prompt.
 
-**Costume break:** after Ep 1 Lena changes into a black power suit. Generate a second sheet (`lena_suit_sheet.png`) before filming Ep 2, or the maid dress will leak into later episodes.
+The job attaches each sheet as `reference_assets`, forces `reference-to-video`, and prepends the identity block (appearance + the episode-correct costume + "do not change facial structure, hair color, skin tone, eye color, or costume"). `GET /api/characters` returns the wardrobe map with episode windows.
 
 ---
 
