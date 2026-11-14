@@ -100,6 +100,7 @@ class SampleRequest(BaseModel):
     image_url: str = ""
     negative_prompt: str = ""
     dry_run: bool = False
+    verify_image_url: bool = True       # fetch the still first; fail before spending
 
 
 DEFAULT_IMAGE_PROMPT = """Cinematic vertical 9:16 poster frame, photoreal. Interior of a luxury gala ballroom at night, gold chandeliers, blurred crowd in evening wear behind shallow depth of field. Center frame: LENA CRUZ, 26, long black hair pulled back, sharp dark eyes, fair olive skin, wearing a black-and-white maid uniform with apron. Her head is turned slightly from a slap; one cheek is flushed. She is NOT crying - jaw set, eyes cold and steady, staring just past camera. To her left, out of focus: VIVIAN VEGA, 48, blonde bob, red lipstick, diamond necklace, hand still raised mid-slap. Dramatic amber key light from the left, deep cobalt shadows. 50mm look, film grain. No text, no watermark, no extra fingers."""
@@ -160,6 +161,7 @@ async def run_sample(job_id: str, req: SampleRequest) -> None:
                 "duration": req.duration,
                 "auto_audio": req.auto_audio,
                 "model_mode": req.model_mode,
+                "reference_image_urls": req.reference_image_urls,
                 "image": {
                     "provider": get_image_provider().primary,
                     "aspect_ratio": req.aspect_ratio,
@@ -212,13 +214,30 @@ async def run_sample(job_id: str, req: SampleRequest) -> None:
                 cached_frame=f"/outputs/{job_id}/frame.png",
             )
 
+        # Never hand a paid endpoint an unreachable frame (Drive /view links are HTML).
+        if req.verify_image_url:
+            from tools.image_host import verify_image_url
+            check = await verify_image_url(image_url)
+            if not check["ok"]:
+                raise RuntimeError(
+                    f"Reference image is not fetchable: {check['error']} "
+                    f"(url={image_url}). For Drive use "
+                    f"https://drive.google.com/uc?id=<FILE_ID>&export=download and share "
+                    f"the file as 'anyone with the link'."
+                )
+            await emit(
+                "frames",
+                f"Reference image verified ({check['content_type']}, {check['bytes']} bytes)",
+                38,
+            )
+
         await emit("video", f"Rendering one {req.duration}s clip in {req.aspect_ratio}...", 40)
         negative = req.negative_prompt or (
             "blurry, distorted, morphing face, changing eye color, text, watermark, extra fingers"
         )
         gen = get_video_provider()
         if req.model_mode == "reference" and req.reference_image_urls:
-            result = await gen.a2e.generate_reference_to_video(
+            result = await gen.generate_reference_to_video(
                 prompt=video_prompt,
                 reference_urls=req.reference_image_urls,
                 video_time=req.duration,

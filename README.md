@@ -554,6 +554,29 @@ IMAGE_PROVIDER=gemini        # auto | gemini | a2e | muapi
 
 `GET /api/providers` reports `hosting.warning` when the configured base URL is not reachable from the internet (localhost/private IP), so a paid run fails loudly instead of handing a2e an unreachable frame.
 
+### Google Drive as the image host
+
+Drive works as the bridge between Gemini and a2e — free, persistent, and no tunnel needed. Two rules decide success:
+
+1. **Share it public.** The file must be `anyone` / `reader`. A private file returns an HTML sign-in page.
+2. **Use the direct-download URL**, not the viewer link:
+
+| Link form | Returns | Usable? |
+|---|---|---|
+| `drive.google.com/file/d/<ID>/view` | HTML page | ❌ |
+| `drive.google.com/uc?id=<ID>&export=download` | image bytes | ✅ |
+| `drive.google.com/thumbnail?id=<ID>&sz=w2000` | image bytes (resized) | ✅ |
+
+The sample job now **verifies the reference URL before spending coins** (`verify_image_url`):
+
+```bash
+cd server
+python run_sample.py --check-url "https://drive.google.com/uc?id=<FILE_ID>&export=download"
+python run_sample.py --reference-file-id <FILE_ID>     # Drive -> a2e reference-to-video
+```
+
+A `/view` link fails immediately with `served text/html, not an image` instead of queueing a paid task that would come back wrong. Set `"verify_image_url": false` only if you know the URL is fine and want to skip the extra fetch.
+
 ### `POST /api/image` — free style test
 
 ```bash

@@ -132,3 +132,45 @@ async def publish_image(
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, dest)
     return f"{base}/images/{quote(job_id)}/{quote(path.name)}"
+
+
+async def verify_image_url(url: str, timeout: int = 45) -> dict:
+    """Confirm a remote URL actually serves an image before we spend coins.
+
+    Google Drive share links are a common trap: ``/file/d/<id>/view`` returns an
+    HTML page, and only ``uc?id=<id>&export=download`` (or ``thumbnail?id=<id>``)
+    returns bytes. Video providers reject the HTML page silently or with a
+    generic failure, long after the task is queued.
+    """
+    result = {"url": url, "ok": False, "status": None, "content_type": None,
+              "bytes": 0, "final_url": url, "error": None}
+    if not is_public_url(url):
+        result["error"] = "not a public http(s) URL (localhost/private hosts are unreachable)"
+        return result
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            resp = await client.get(url)
+        result["status"] = resp.status_code
+        result["final_url"] = str(resp.url)
+        ctype = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+        result["content_type"] = ctype
+        result["bytes"] = len(resp.content)
+        if resp.status_code != 200:
+            result["error"] = f"HTTP {resp.status_code}"
+        elif not ctype.startswith("image/"):
+            result["error"] = (
+                f"served {ctype or 'unknown type'}, not an image"
+                + (" (looks like a Drive/Docs HTML viewer page)" if "html" in ctype else "")
+            )
+        elif result["bytes"] < 1024:
+            result["error"] = f"suspiciously small ({result['bytes']} bytes)"
+        else:
+            result["ok"] = True
+    except Exception as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
+    return result
+
+
+def drive_direct_url(file_id: str) -> str:
+    """Direct-download form of a Drive file (public file required)."""
+    return f"https://drive.google.com/uc?id={file_id}&export=download"

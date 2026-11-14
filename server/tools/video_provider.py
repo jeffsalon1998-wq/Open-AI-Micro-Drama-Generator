@@ -159,6 +159,15 @@ class VideoProviderRouter:
     def name(self) -> str:
         return self.primary.name
 
+    async def generate_reference_to_video(self, **kwargs) -> VideoResult:
+        """Reference-to-video is a2e-only; fall back to image-to-video elsewhere."""
+        if self.a2e.available:
+            return await self.a2e._gen.generate_reference_to_video(**kwargs)
+        raise RuntimeError(
+            "reference-to-video needs the a2e provider; set A2E_API_KEY or use "
+            "IMAGE_PROVIDER/VIDEO_PROVIDER=a2e."
+        )
+
     async def generate_from_image(self, **kwargs) -> VideoResult:
         primary = self.primary
         try:
