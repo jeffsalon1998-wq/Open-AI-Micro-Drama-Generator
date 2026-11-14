@@ -176,6 +176,31 @@ async def health():
     return {"status": "ok", "service": "microdrama-api"}
 
 
+@app.get("/api/providers")
+async def providers():
+    """Which video engine will render: a2e.ai and/or MuAPI, plus output settings."""
+    from tools.video_provider import VideoProviderRouter
+    router = VideoProviderRouter()
+    return {
+        "video_provider": router.requested,
+        # Without a2e credentials, a2e vs muapi would render identically — say so.
+        "selected": router.primary.name if router.ready else "none",
+        "effective": ("a2e" if router.a2e.available else "muapi") if router.ready else "none",
+        "fallback_enabled": router.allow_fallback,
+        "a2e": {
+            "configured": router.a2e.available,
+            "model_version": router.a2e._gen.model_version,
+            "reference_mode": router.a2e.reference_mode,
+            "auto_audio": router.a2e.auto_audio,
+        },
+        "muapi": {"configured": router.muapi.available},
+        "aspect_ratio": os.environ.get("VIDEO_ASPECT_RATIO", "9:16"),
+        "clip_seconds": int(os.environ.get("CLIP_SECONDS", "5")),
+        "retention_clip_seconds": int(os.environ.get("RETENTION_CLIP_SECONDS", "10")),
+        "target_resolution": os.environ.get("TARGET_RESOLUTION", "720x1280"),
+    }
+
+
 @app.get("/api/genres")
 async def list_genres():
     """Retention genre presets for the hooked-series UI."""

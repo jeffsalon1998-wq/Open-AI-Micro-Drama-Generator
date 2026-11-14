@@ -283,10 +283,12 @@ Open-AI-Micro-Drama-Generator/
 │   │   ├── series.py                 # SeriesBible, EpisodePlan, HookAudit models
 │   │   └── shot.py                   # ShotBriefDescription, ShotDescription
 │   │
-│   ├── tools/                        # MuAPI integration layer
+│   ├── tools/                        # Provider integration layer (MuAPI + a2e.ai)
 │   │   ├── muapi_llm.py              # MuAPILLM — submit + poll LLM completions
 │   │   ├── muapi_image_generator.py  # T2I (flux-dev) + I2I (flux-kontext) image gen
-│   │   ├── muapi_video_generator.py  # I2V (kling-v2.1) video gen with polling
+│   │   ├── muapi_video_generator.py  # I2V (Seedance 2 / Kling) video gen with polling
+│   │   ├── a2e_video_generator.py    # a2e.ai I2V / reference / FLF2V / extend client
+│   │   ├── video_provider.py         # Router: pick a2e or MuAPI, fall back on failure
 │   │   └── muapi_uploader.py         # Upload local images to MuAPI for URL references
 │   │
 │   ├── pipelines/                    # Orchestration logic
@@ -405,6 +407,24 @@ SSE event stream. Reconnect-safe — replays all past events on reconnect.
 
 ---
 
+### `GET /api/providers` — Active video engine
+
+```json
+{
+  "selected": "a2e",
+  "effective": "a2e",
+  "fallback_enabled": true,
+  "a2e": { "configured": true, "model_version": "a2e-v2", "reference_mode": false, "auto_audio": true },
+  "muapi": { "configured": true },
+  "aspect_ratio": "9:16",
+  "clip_seconds": 5,
+  "retention_clip_seconds": 10,
+  "target_resolution": "720x1280"
+}
+```
+
+---
+
 ### `GET /api/genres` — Retention genre presets
 
 Returns the viral genre engines (label, hook formula, loop question, example hook) used by Hooked Series Mode.
@@ -445,6 +465,57 @@ One key. That's it.
 | Job polling | `GET /predictions/{id}/result` | — |
 
 All jobs follow the same async pattern: submit → get `request_id` → poll every 3 s → return on `"completed"`.
+
+---
+
+## 🎬 Video engines: a2e.ai and MuAPI
+
+Rendering can run on either engine, selected with `VIDEO_PROVIDER`. Both are normalised behind one call shape, so pipelines don't care which one runs.
+
+| | MuAPI (current default) | a2e.ai (new) |
+|---|---|---|
+| Models | Seedance 2 VIP → Kling v2.1 Master | `a2e`, `a2e-v2`, `a2e-v2-flash` |
+| Max clip length | 5–15s per call | **3–20s in one continuous take** (`a2e-v2`, 24 fps) |
+| Audio | none (silent clips) | **native audio** with `auto_add_audio` on v2 |
+| Identity lock | first frame from a character portrait | **`reference-to-video`** — portraits as reference assets |
+| Exact end frame | — | **`FLF2V`** (first + last frame) |
+| Continuation | — | **video extension** via `starting_video_url` |
+
+Why this matters for hooked micro-drama: a 10–15s retention beat renders as **one shot instead of three chopped clips**, with dialogue/slap-sting audio already in it.
+
+### Setup
+
+```bash
+# server/.env
+A2E_API_KEY=your_a2e_token
+VIDEO_PROVIDER=auto        # auto | a2e | muapi
+A2E_MODEL_VERSION=a2e-v2
+A2E_AUTO_AUDIO=true
+A2E_REFERENCE_MODE=false   # true -> character-locked reference-to-video
+VIDEO_ASPECT_RATIO=9:16
+RETENTION_CLIP_SECONDS=10
+TARGET_RESOLUTION=720x1280
+```
+
+`auto` uses a2e when `A2E_API_KEY` is set and MuAPI otherwise; with `VIDEO_FALLBACK=true` a mid-run failure falls through to the other engine instead of killing the scene. Check what will be used with `GET /api/providers`.
+
+### a2e endpoints used
+
+| Purpose | Endpoint |
+|---------|----------|
+| Create task | `POST /v1/userImage2Video/start` |
+| Task detail (source of truth when polling) | `GET /v1/userImage2Video/{_id}` |
+| List tasks | `GET /v1/userImage2Video/allRecords` |
+| Delete task | `DELETE /v1/userImage2Video/{_id}` |
+
+Notes from implementation:
+
+- Submission is **async** — a `200` only means the task was accepted. Results are read from the detail endpoint, never assumed from the submit response.
+- Task status vocabulary isn't published, so terminal detection is defensive: explicit failure markers → success markers → presence of a media URL. HD/result URLs are preferred over plain ones.
+- `generation_params.aspect_ratio` is authoritative. The vendor sample sends `16:9` while its prompt demands 3:4 portrait — this client never inherits that mismatch and defaults to `9:16`.
+- Durations are clamped/snapped per mode: image/FLF2V 3–20s, reference `3|4|5|10|15`, text `5|10|15`, extension ≥5s. Prompts are trimmed to 2000 chars for v2 on a line boundary.
+- `unlimited=true` is rejected by API tokens (`403 UNLIMITED_WEB_ONLY`) and is never sent. `ai_sharing_consent` is omitted, which the docs allow for legacy/API callers.
+- Concatenation now normalises every clip to one resolution/fps and gives silent clips a silent track, so a2e (audio) and MuAPI (no audio) clips mix cleanly. Mixed aspect ratios are **cover-cropped**, not stretched.
 
 ---
 

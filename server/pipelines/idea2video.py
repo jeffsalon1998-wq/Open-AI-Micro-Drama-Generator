@@ -14,7 +14,7 @@ ProgressCallback = Callable[[str, str, int], Awaitable[None]]
 
 class Idea2VideoPipeline:
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or os.environ["MUAPI_KEY"]
+        self.api_key = api_key or os.environ.get("MUAPI_KEY", "")
         self.screenwriter = Screenwriter()
         self.character_extractor = CharacterExtractor()
         self.script2video = Script2VideoPipeline(api_key=self.api_key)

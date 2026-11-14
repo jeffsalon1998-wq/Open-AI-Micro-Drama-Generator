@@ -7,7 +7,7 @@ from agents.storyboard_artist import StoryboardArtist
 from interfaces.character import CharacterInScene
 from interfaces.shot import ShotDescription
 from tools.muapi_image_generator import MuAPIImageGenerator
-from tools.muapi_video_generator import MuAPIVideoGenerator
+from tools.video_provider import get_video_provider
 from tools.muapi_uploader import upload_image_from_url
 from utils.video import concatenate_videos, download_video
 
@@ -17,10 +17,22 @@ ProgressCallback = Callable[[str, str, int], Awaitable[None]]
 
 class Script2VideoPipeline:
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or os.environ["MUAPI_KEY"]
+        # MuAPI is optional: an a2e-only deployment needs A2E_API_KEY instead.
+        self.api_key = api_key or os.environ.get("MUAPI_KEY", "")
         self.storyboard_artist = StoryboardArtist()
         self.image_gen = MuAPIImageGenerator(api_key=self.api_key)
-        self.video_gen = MuAPIVideoGenerator(api_key=self.api_key)
+        self.video_gen = get_video_provider(api_key=self.api_key)
+
+    # Vertical-first delivery. Micro-drama lives in 9:16; override with
+    # VIDEO_ASPECT_RATIO=16:9 when producing landscape cutdowns.
+    ASPECT_RATIO = os.environ.get("VIDEO_ASPECT_RATIO", "9:16")
+
+    def _clip_seconds(self, retention_mode: bool) -> int:
+        """Clip length per shot. Retention mode renders longer continuous clips
+        (a2e-v2 does up to 20s in one take, so hooks don't get chopped)."""
+        if retention_mode:
+            return int(os.environ.get("RETENTION_CLIP_SECONDS", "10"))
+        return int(os.environ.get("CLIP_SECONDS", "5"))
 
     async def run(
         self,
@@ -97,7 +109,11 @@ class Script2VideoPipeline:
             base_progress + int(progress_range * 0.60),
         )
         video_tasks = [
-            self._generate_shot_video(shot, i, working_dir)
+            self._generate_shot_video(
+                shot, i, working_dir,
+                retention_mode=retention_mode,
+                reference_urls=list(character_portrait_urls.values()),
+            )
             for i, shot in enumerate(shots)
             if shot.first_frame_url
         ]
@@ -167,22 +183,27 @@ class Script2VideoPipeline:
             f"{shot.visual_desc}. "
             f"{char_desc}. "
             f"Style: {style}. "
-            "Cinematic composition, 16:9 aspect ratio, high quality, detailed."
+            f"Cinematic composition, {self.ASPECT_RATIO} aspect ratio, high quality, detailed."
         )
 
         if reference_url:
             try:
                 return await self.image_gen.generate_image_with_reference(
-                    full_prompt, reference_url, aspect_ratio="16:9"
+                    full_prompt, reference_url, aspect_ratio=self.ASPECT_RATIO
                 )
             except Exception as e:
                 print(f"Warning: reference image generation failed, falling back to T2I: {e}")
 
         # Fallback to regular T2I
-        return await self.image_gen.generate_image(full_prompt, aspect_ratio="16:9")
+        return await self.image_gen.generate_image(full_prompt, aspect_ratio=self.ASPECT_RATIO)
 
     async def _generate_shot_video(
-        self, shot: ShotDescription, shot_idx: int, working_dir: str
+        self,
+        shot: ShotDescription,
+        shot_idx: int,
+        working_dir: str,
+        retention_mode: bool = False,
+        reference_urls: Optional[List[str]] = None,
     ) -> str:
         """Generate a video clip for a shot. Returns local file path."""
         if not shot.first_frame_url:
@@ -199,9 +220,19 @@ class Script2VideoPipeline:
             except Exception as e:
                 print(f"Warning: re-upload failed, using original URL: {e}")
 
-        video_url = await self.video_gen.generate_video_from_image(
-            video_prompt, frame_url, duration=5, aspect_ratio="16:9"
+        result = await self.video_gen.generate_from_image(
+            prompt=video_prompt,
+            image_url=frame_url,
+            duration=self._clip_seconds(retention_mode),
+            aspect_ratio=self.ASPECT_RATIO,
+            negative_prompt=(
+                "blurry, distorted, static, morphing face, changing eye color, "
+                "text artifacts, watermark, extra fingers"
+            ),
+            reference_urls=reference_urls,
         )
+        video_url = result.url
+        print(f"[video] shot {shot_idx} via {result.provider} ({result.duration_seconds}s)")
 
         # Download the video locally
         local_path = str(Path(working_dir) / f"shot_{shot_idx:03d}.mp4")
