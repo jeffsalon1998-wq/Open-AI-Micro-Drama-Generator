@@ -2,6 +2,7 @@ import json
 import os
 from typing import List
 
+from agents.retention import STORYBOARD_RETENTION_RULES
 from interfaces.character import CharacterInScene
 from interfaces.shot import ShotBriefDescription
 from tools.muapi_llm import MuAPILLM
@@ -55,6 +56,7 @@ class StoryboardArtist:
         script: str,
         characters: List[CharacterInScene],
         user_requirement: str,
+        retention_mode: bool = False,
     ) -> List[ShotBriefDescription]:
         system_prompt = (
             "You are a professional storyboard artist and cinematographer. "
@@ -63,6 +65,8 @@ class StoryboardArtist:
             "Keep shots between 3-6 seconds each (they will be 5-second video clips). "
             "Respond ONLY with valid JSON — no markdown, no explanation, just JSON."
         )
+        if retention_mode:
+            system_prompt += " " + STORYBOARD_RETENTION_RULES
 
         character_descriptions = "\n".join([
             f"- {c.name}: {c.static_features}. Wearing: {c.dynamic_features}"
@@ -93,7 +97,8 @@ Return a JSON object with this exact structure:
 
 Rules:
 - Create 3-5 shots per scene
-- Start with an establishing shot, include action shots, end with a closing shot"""
+- Start with an establishing shot, include action shots, end with a closing shot
+""" + (f"\n{STORYBOARD_RETENTION_RULES}\n- Shot 1 MUST be the HOOK shot (close-up/shocking action, not a wide). Final shot MUST be the CLIFFHANGER shot.\n" if retention_mode else "")
 
         raw = await self.llm.complete(
             prompt, system_prompt=system_prompt, timeout=120, fallback=_FALLBACK_STORYBOARD

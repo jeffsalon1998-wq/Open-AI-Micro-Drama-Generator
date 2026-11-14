@@ -33,6 +33,7 @@ class Script2VideoPipeline:
         scene_idx: int = 0,
         base_progress: int = 30,
         progress_range: int = 60,
+        retention_mode: bool = False,
     ) -> str:
         """
         Run the script-to-video pipeline for a single scene.
@@ -68,7 +69,8 @@ class Script2VideoPipeline:
             base_progress + int(progress_range * 0.15),
         )
         shots_brief = await self.storyboard_artist.design_storyboard(
-            script, characters, f"{user_requirement}. Style: {style}"
+            script, characters, f"{user_requirement}. Style: {style}",
+            retention_mode=retention_mode,
         )
 
         shots: List[ShotDescription] = [

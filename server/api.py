@@ -63,6 +63,11 @@ class GenerateRequest(BaseModel):
     style: str = "Cinematic"
     mode: str = "idea2video"  # "idea2video" or "script2video"
     script: str = ""          # used when mode == "script2video"
+    # Retention / hooked-series options
+    retention_mode: bool = False
+    genre: str = "billionaire_revenge"
+    episode_number: int = 1
+    series_bible: str = ""    # paste previous bible JSON/text to keep continuity
 
 
 class GenerateResponse(BaseModel):
@@ -113,6 +118,7 @@ async def run_pipeline(job_id: str, req: GenerateRequest) -> None:
                 scene_idx=0,
                 base_progress=15,
                 progress_range=80,
+                retention_mode=req.retention_mode,
             )
         else:
             # Idea2Video: full agentic pipeline
@@ -123,6 +129,10 @@ async def run_pipeline(job_id: str, req: GenerateRequest) -> None:
                 style=req.style,
                 job_id=job_id,
                 progress_callback=progress_callback,
+                retention_mode=req.retention_mode,
+                genre=req.genre,
+                episode_number=req.episode_number,
+                series_bible=req.series_bible or None,
             )
 
         # Convert local path to URL
@@ -164,6 +174,26 @@ async def run_pipeline(job_id: str, req: GenerateRequest) -> None:
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "service": "microdrama-api"}
+
+
+@app.get("/api/genres")
+async def list_genres():
+    """Retention genre presets for the hooked-series UI."""
+    from agents.retention import GENRE_PRESETS
+    return {
+        key: {"label": v["label"], "hook_formula": v["hook_formula"],
+              "loop_question": v["loop_question"], "example_hook": v["example_hook"]}
+        for key, v in GENRE_PRESETS.items()
+    }
+
+
+@app.post("/api/series-bible")
+async def series_bible(req: GenerateRequest):
+    """Generate a 10-episode hooked series bible (no video)."""
+    from agents.screenwriter import Screenwriter
+    sw = Screenwriter()
+    bible = await sw.develop_series_bible(req.idea, req.genre, req.user_requirement)
+    return {"bible": bible, "genre": req.genre}
 
 
 @app.post("/api/generate", response_model=GenerateResponse)

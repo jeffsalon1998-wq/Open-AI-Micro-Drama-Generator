@@ -72,6 +72,28 @@ Watch MicroDrama AI transform ideas into fully cinematic micro-drama videos usin
 
 ---
 
+## 🔥 Retention Engine — Hooked, High-Retention Series
+
+MicroDrama AI can now generate **hooked, high-retention episodes** designed for ReelShort / DramaBox style vertical short-form. Toggle **Hooked Series Mode** on the landing page (on by default) and every episode is built on the retention framework:
+
+| Lever | What the engine enforces |
+|-------|--------------------------|
+| **Cold open** | First 3 seconds: mid-action, shocking line/visual. No title card, no establishing shot. |
+| **Open loop** | One clear question posed in 10s, deliberately **not** answered this episode. |
+| **Pattern interrupt** | New info / twist / escalation every ~5 seconds. No filler, no dead air. |
+| **Escalation ladder** | Stakes rise beat by beat: humiliation → shock → danger → revenge payoff. |
+| **Payoff + bigger mystery** | Close one loop for satisfaction, open a bigger one before the end. |
+| **Cliffhanger** | Final 3 seconds: reveal, question, or danger. Never a resolution. |
+| **Hook audit** | Each episode is scored 0–100 on hook / retention / cliffhanger, with fixes. |
+
+**Viral genre engines** (one-click presets): Billionaire Revenge · Rejected Mate · Time-Loop Murder · Fake Heiress · AI Husband · Murder Mystery.
+
+**Flagship series included:** [`SERIES_BIBLE.md`](./SERIES_BIBLE.md) — *"The Maid Who Bought the Empire"*, a complete 10-episode hooked series with hooks, loops, escalations and cliffhangers per episode. Ready-to-paste Episode 1 files live in [`series/`](./series), plus a [`retention checklist`](./series/retention_checklist.md) to audit before posting.
+
+Retention artifacts are written to `outputs/{job_id}/`: `story.txt`, `hook_audit.json`, `scene_scripts.json`.
+
+---
+
 ## 💡 Key Features
 
 <table align="center" width="100%">
@@ -234,8 +256,9 @@ Open [http://localhost:3000](http://localhost:3000).
 1. Enter an idea — e.g. *"A detective chases a shadow through a neon-lit cyberpunk city"*
 2. Optionally add requirements — e.g. *"Keep it under 3 scenes, suitable for all ages"*
 3. Pick a visual style: **Cinematic**, Realistic, Anime, Fantasy, or Documentary
-4. Click **Generate Video** and watch the pipeline run in real time
-5. Download your finished micro-drama when it completes
+4. Leave **🔥 Hooked Series Mode** on to generate a high-retention episode (cold-open hook, open loop, cliffhanger)
+5. Click **Generate Hooked Episode 🔥** and watch the pipeline run in real time
+6. Download your finished micro-drama when it completes
 
 ---
 
@@ -251,11 +274,13 @@ Open-AI-Micro-Drama-Generator/
 │   │
 │   ├── agents/                       # LLM-powered AI agents (all via MuAPI)
 │   │   ├── screenwriter.py           # develop_story() + write_script_based_on_story()
+│   │   ├── retention.py              # 🔥 Retention Engine: genre presets, hook/loop/escalation rules, hook audit
 │   │   ├── character_extractor.py    # extract_characters() → List[CharacterInScene]
 │   │   └── storyboard_artist.py      # design_storyboard() → List[ShotBriefDescription]
 │   │
 │   ├── interfaces/                   # Pydantic data models
 │   │   ├── character.py              # CharacterInScene (idx, name, static/dynamic features)
+│   │   ├── series.py                 # SeriesBible, EpisodePlan, HookAudit models
 │   │   └── shot.py                   # ShotBriefDescription, ShotDescription
 │   │
 │   ├── tools/                        # MuAPI integration layer
@@ -302,7 +327,11 @@ Open-AI-Micro-Drama-Generator/
   "idea": "A lone astronaut discovers alien ruins on Europa",
   "user_requirement": "Keep it under 3 scenes, suitable for all ages",
   "style": "Cinematic",
-  "mode": "idea2video"
+  "mode": "idea2video",
+  "retention_mode": true,
+  "genre": "billionaire_revenge",
+  "episode_number": 1,
+  "series_bible": ""
 }
 ```
 
@@ -313,6 +342,10 @@ Open-AI-Micro-Drama-Generator/
 | `style` | string | `"Cinematic"` | Visual style: Cinematic, Realistic, Anime, Fantasy, Documentary |
 | `mode` | string | `"idea2video"` | `"idea2video"` or `"script2video"` |
 | `script` | string | `""` | Scene script (only used when `mode = "script2video"`) |
+| `retention_mode` | bool | `false` | Enables the Retention Engine: cold-open hook, open loop, escalation, cliffhanger, hook audit |
+| `genre` | string | `"billionaire_revenge"` | Viral genre engine: `billionaire_revenge`, `rejected_mate`, `time_loop`, `fake_heiress`, `ai_husband`, `murder_mystery` |
+| `episode_number` | int | `1` | Episode index for series continuity |
+| `series_bible` | string | `""` | Previous bible/story text — keeps later episodes consistent |
 
 **Response:**
 ```json
@@ -369,6 +402,24 @@ SSE event stream. Reconnect-safe — replays all past events on reconnect.
 ```json
 { "status": "ok", "service": "microdrama-api" }
 ```
+
+---
+
+### `GET /api/genres` — Retention genre presets
+
+Returns the viral genre engines (label, hook formula, loop question, example hook) used by Hooked Series Mode.
+
+---
+
+### `POST /api/series-bible` — Generate a 10-episode series bible
+
+Same body as `/api/generate` (uses `idea`, `genre`, `user_requirement`). Returns JSON:
+
+```json
+{ "bible": "<series bible JSON string>", "genre": "billionaire_revenge" }
+```
+
+Each episode in the bible includes `hook_line`, `open_loop`, `beats`, `twist`, `payoff`, and `cliffhanger`.
 
 ---
 

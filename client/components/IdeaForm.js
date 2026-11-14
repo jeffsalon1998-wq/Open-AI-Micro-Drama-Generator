@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Sparkles, ChevronDown, Loader2 } from "lucide-react";
+import { Sparkles, ChevronDown, Loader2, Flame } from "lucide-react";
 
 const STYLES = [
   { value: "Cinematic", label: "Cinematic", desc: "Epic film quality" },
@@ -24,12 +24,28 @@ const MODES = [
   },
 ];
 
+const GENRES = [
+  { value: "billionaire_revenge", label: "💰 Billionaire Revenge", desc: "Humiliated maid buys the empire" },
+  { value: "rejected_mate", label: "🐺 Rejected Mate", desc: "Alpha rejects fated mate, she awakens" },
+  { value: "time_loop", label: "⏰ Time-Loop Murder", desc: "Dies at midnight, wakes at 8am" },
+  { value: "fake_heiress", label: "👑 Fake Heiress", desc: "Impostor is the real heir" },
+  { value: "ai_husband", label: "🤖 AI Husband", desc: "Perfect husband knows too much" },
+  { value: "murder_mystery", label: "🔪 Murder Mystery", desc: "Victim names the killer, then dies" },
+];
+
+const FLAGSHIP_IDEA =
+  "THE MAID WHO BOUGHT THE EMPIRE — Ep 1: A maid is slapped and fired on camera at a gala for stealing a necklace she didn't steal. Her phone rings: 'Ma'am, acquisition complete. You now own 51% of Vega Group.' The CEO kneels. She takes the company. Cliffhanger: 'Now... let's talk about who burned my house down.'";
+
 export default function IdeaForm({ onSubmit, isSubmitting }) {
   const [idea, setIdea] = useState("");
   const [userRequirement, setUserRequirement] = useState("");
   const [style, setStyle] = useState("Cinematic");
   const [mode, setMode] = useState("idea2video");
   const [script, setScript] = useState("");
+  const [retentionMode, setRetentionMode] = useState(true);
+  const [genre, setGenre] = useState("billionaire_revenge");
+  const [episodeNumber, setEpisodeNumber] = useState(1);
+  const [seriesBible, setSeriesBible] = useState("");
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -40,6 +56,10 @@ export default function IdeaForm({ onSubmit, isSubmitting }) {
       style,
       mode,
       script: script.trim(),
+      retention_mode: retentionMode,
+      genre,
+      episode_number: Number(episodeNumber) || 1,
+      series_bible: seriesBible.trim(),
     });
   };
 
@@ -73,6 +93,110 @@ export default function IdeaForm({ onSubmit, isSubmitting }) {
         border: "1px solid #1a1a26",
       }}
     >
+      {/* Hooked Series toggle */}
+      <div
+        className="p-4 rounded-xl"
+        style={{
+          backgroundColor: retentionMode ? "rgba(249, 115, 22, 0.08)" : "#1a1a26",
+          border: retentionMode ? "1px solid rgba(249, 115, 22, 0.45)" : "1px solid #22223a",
+        }}
+      >
+        <button
+          type="button"
+          onClick={() => setRetentionMode(!retentionMode)}
+          className="w-full flex items-center gap-3 text-left"
+          style={{ cursor: "pointer", background: "none", border: "none" }}
+        >
+          <span
+            className="w-10 h-10 rounded-full flex items-center justify-center shrink-0"
+            style={{ backgroundColor: retentionMode ? "rgba(249,115,22,0.2)" : "#22223a" }}
+          >
+            <Flame size={18} style={{ color: retentionMode ? "#fb923c" : "#6b7280" }} />
+          </span>
+          <span className="flex-1">
+            <span className="block text-sm font-semibold" style={{ color: retentionMode ? "#fdba74" : "#e2e8f0" }}>
+              🔥 Hooked Series Mode — High Retention
+            </span>
+            <span className="block text-xs mt-0.5" style={{ color: "#6b7280" }}>
+              Cold-open hook (3s) • Open loop • Escalation every 5s • Cliffhanger ending • Hook audit
+            </span>
+          </span>
+          <span
+            className="w-11 h-6 rounded-full relative shrink-0 transition-all"
+            style={{ backgroundColor: retentionMode ? "#f97316" : "#374151" }}
+          >
+            <span
+              className="absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all"
+              style={{ left: retentionMode ? "22px" : "2px" }}
+            />
+          </span>
+        </button>
+
+        {retentionMode && (
+          <div className="mt-4 space-y-4">
+            <div>
+              <label style={labelStyle}>Viral Genre Engine</label>
+              <div className="grid grid-cols-2 gap-2">
+                {GENRES.map((g) => (
+                  <button
+                    key={g.value}
+                    type="button"
+                    onClick={() => setGenre(g.value)}
+                    className="text-left p-3 rounded-xl transition-all"
+                    style={{
+                      backgroundColor: genre === g.value ? "rgba(249,115,22,0.15)" : "#12121a",
+                      border: genre === g.value ? "1px solid rgba(249,115,22,0.55)" : "1px solid #22223a",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <div className="text-xs font-semibold" style={{ color: genre === g.value ? "#fdba74" : "#e2e8f0" }}>
+                      {g.label}
+                    </div>
+                    <div className="text-xs mt-0.5" style={{ color: "#6b7280", fontSize: "11px" }}>{g.desc}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="flex gap-3">
+              <div className="flex-1">
+                <label style={labelStyle}>Episode #</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="50"
+                  value={episodeNumber}
+                  onChange={(e) => setEpisodeNumber(e.target.value)}
+                  style={inputStyle}
+                />
+              </div>
+              <div className="flex-[2]">
+                <label style={labelStyle}>Series Bible (optional — paste Ep 1 bible for continuity)</label>
+                <input
+                  type="text"
+                  value={seriesBible}
+                  onChange={(e) => setSeriesBible(e.target.value)}
+                  placeholder="Paste previous bible JSON/text..."
+                  style={inputStyle}
+                />
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => { setIdea(FLAGSHIP_IDEA); setGenre("billionaire_revenge"); setEpisodeNumber(1); setMode("idea2video"); }}
+              className="w-full py-2.5 rounded-xl text-xs font-semibold transition-all"
+              style={{
+                backgroundColor: "rgba(249,115,22,0.12)",
+                border: "1px solid rgba(249,115,22,0.4)",
+                color: "#fdba74",
+                cursor: "pointer",
+              }}
+            >
+              ⚡ Load Flagship Series: “The Maid Who Bought the Empire” — Ep 1
+            </button>
+          </div>
+        )}
+      </div>
+
       {/* Mode selector */}
       <div>
         <label style={labelStyle}>Generation Mode</label>
@@ -115,7 +239,9 @@ export default function IdeaForm({ onSubmit, isSubmitting }) {
           onChange={(e) => setIdea(e.target.value)}
           placeholder={
             mode === "idea2video"
-              ? "e.g. A lone astronaut discovers an ancient alien structure on Mars..."
+              ? retentionMode
+                ? "e.g. A maid is fired on camera... then buys the company that fired her. Ep 1 cliffhanger: 'Who burned my house down?'"
+                : "e.g. A lone astronaut discovers an ancient alien structure on Mars..."
               : "Brief title or concept for your video"
           }
           rows={3}
@@ -133,7 +259,7 @@ export default function IdeaForm({ onSubmit, isSubmitting }) {
           <textarea
             value={script}
             onChange={(e) => setScript(e.target.value)}
-            placeholder="Write your scene script here. Be descriptive about setting, characters, actions, and mood..."
+            placeholder="Write your scene script here. Tip: open with a shocking line, end on a cliffhanger..."
             rows={6}
             required
             style={inputStyle}
@@ -184,7 +310,11 @@ export default function IdeaForm({ onSubmit, isSubmitting }) {
         <textarea
           value={userRequirement}
           onChange={(e) => setUserRequirement(e.target.value)}
-          placeholder="Any specific instructions, mood, pacing, color palette, character details..."
+          placeholder={
+            retentionMode
+              ? "e.g. Vertical 9:16 feel, fast cuts, hateable villain, revenge payoff in Ep 1..."
+              : "Any specific instructions, mood, pacing, color palette, character details..."
+          }
           rows={2}
           style={inputStyle}
           onFocus={(e) => (e.target.style.borderColor = "#7c3aed")}
@@ -200,10 +330,12 @@ export default function IdeaForm({ onSubmit, isSubmitting }) {
         style={{
           background: isSubmitting
             ? "#3b3b5c"
-            : "linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%)",
+            : retentionMode
+              ? "linear-gradient(135deg, #f97316 0%, #ea580c 100%)"
+              : "linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%)",
           color: isSubmitting ? "#6b7280" : "white",
           cursor: isSubmitting ? "not-allowed" : "pointer",
-          boxShadow: isSubmitting ? "none" : "0 4px 20px rgba(124, 58, 237, 0.4)",
+          boxShadow: isSubmitting ? "none" : retentionMode ? "0 4px 20px rgba(249,115,22,0.4)" : "0 4px 20px rgba(124, 58, 237, 0.4)",
         }}
       >
         {isSubmitting ? (
@@ -214,7 +346,7 @@ export default function IdeaForm({ onSubmit, isSubmitting }) {
         ) : (
           <>
             <Sparkles size={16} />
-            Generate Video
+            {retentionMode ? "Generate Hooked Episode 🔥" : "Generate Video"}
           </>
         )}
       </button>

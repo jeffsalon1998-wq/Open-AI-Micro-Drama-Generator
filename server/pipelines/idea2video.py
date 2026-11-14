@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 from typing import Callable, Awaitable, Optional
@@ -25,19 +26,49 @@ class Idea2VideoPipeline:
         style: str,
         job_id: str,
         progress_callback: ProgressCallback,
+        retention_mode: bool = False,
+        genre: str = "billionaire_revenge",
+        episode_number: int = 1,
+        series_bible: Optional[str] = None,
     ) -> str:
         """
         Full pipeline: idea → story → scenes → videos → final concatenated video.
+        When retention_mode=True, the story is built as a hooked episode
+        (cold open, open loop, escalation, cliffhanger) and saved with a
+        hook audit + series bible for the next episode.
         Returns the path to the final video.
         """
         outputs_dir = Path("outputs") / job_id
         outputs_dir.mkdir(parents=True, exist_ok=True)
 
-        # Stage 1: Develop story
+        # Stage 1: Develop story (retention-aware when enabled)
         await progress_callback(
-            "screenwriter", "Developing story...", 10
+            "screenwriter",
+            "Developing hooked episode story..." if retention_mode else "Developing story...",
+            10,
         )
-        story = await self.screenwriter.develop_story(idea, user_requirement)
+        story = await self.screenwriter.develop_story(
+            idea, user_requirement,
+            retention_mode=retention_mode, genre=genre,
+            episode_number=episode_number, series_bible=series_bible,
+        )
+        (outputs_dir / "story.txt").write_text(story, encoding="utf-8")
+
+        # Stage 1b: Hook audit (retention mode only) — saved for review
+        if retention_mode:
+            await progress_callback("screenwriter", "Auditing hook & retention...", 15)
+            try:
+                audit = await self.screenwriter.audit_hook(story)
+                (outputs_dir / "hook_audit.json").write_text(
+                    json.dumps(audit, indent=2), encoding="utf-8"
+                )
+                await progress_callback(
+                    "screenwriter",
+                    f"Hook audit: {audit.get('overall', '?')}/100 — {audit.get('verdict', '')}",
+                    18,
+                )
+            except Exception as e:
+                print(f"Warning: hook audit failed: {e}")
 
         # Stage 2: Extract characters from story
         await progress_callback(
@@ -50,11 +81,18 @@ class Idea2VideoPipeline:
             "screenwriter", "Writing scene scripts...", 25
         )
         scene_scripts = await self.screenwriter.write_script_based_on_story(
-            story, user_requirement
+            story, user_requirement,
+            retention_mode=retention_mode, genre=genre,
+            episode_number=episode_number,
         )
 
         if not scene_scripts:
             raise RuntimeError("Screenwriter produced no scene scripts")
+
+        # Save scripts for reuse in next episode / manual review
+        (outputs_dir / "scene_scripts.json").write_text(
+            json.dumps(scene_scripts, indent=2), encoding="utf-8"
+        )
 
         # Stage 4: Generate video for each scene
         scene_video_paths = []
@@ -78,6 +116,7 @@ class Idea2VideoPipeline:
                     scene_idx=scene_idx,
                     base_progress=base_progress,
                     progress_range=progress_per_scene,
+                    retention_mode=retention_mode,
                 )
                 scene_video_paths.append(scene_video)
             except Exception as e:

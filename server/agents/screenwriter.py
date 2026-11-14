@@ -1,7 +1,16 @@
 import json
 import os
-from typing import List
+from typing import List, Optional
 
+from agents.retention import (
+    RETENTION_RULES,
+    build_episode_script_prompt,
+    build_episode_story_prompt,
+    build_hook_audit_prompt,
+    build_series_bible_prompt,
+    heuristic_audit,
+    parse_json_response,
+)
 from tools.muapi_llm import MuAPILLM
 
 _FALLBACK_STORY = """
@@ -41,12 +50,78 @@ _FALLBACK_SCENES = json.dumps({
     ]
 })
 
+# Hooked fallback — used when retention_mode=True and LLM is unavailable
+_FALLBACK_HOOKED_STORY = """
+HOOK (first 3 seconds): A slap echoes across a gala. Lena, the maid, holds her cheek as Vivian screams: "You're fired!" On-screen text: "She was fired for stealing. She wasn't the thief."
+OPEN LOOP: Who really stole the necklace — and why does Lena's phone say "Ma'am, you now own 51% of Vega Group"?
+BEATS: 1) Humiliation at gala. 2) Lena fired on camera. 3) Phone rings — acquisition complete. 4) CEO Marcus kneels. 5) Lena reveals she bought the company. 6) Vivian's face drops. 7) Lena whispers the real question.
+TWIST: The thief was Vivian herself — she planted the necklace to frame Lena.
+PAYOFF: Lena takes back the company. One loop closed.
+CLIFFHANGER (final 3 seconds): Lena stares at Vivian: "Now... let's talk about who burned my house down." CUT TO BLACK.
+"""
+
+_FALLBACK_HOOKED_SCENES = json.dumps({
+    "scenes": [
+        {
+            "scene_number": 1,
+            "title": "You Fired the Wrong Maid",
+            "script": (
+                "INT. VEGA GROUP GALA - NIGHT\n"
+                "COLD OPEN: A slap echoes. Lena, a maid in uniform, holds her cheek. "
+                "VIVIAN (screaming): You're fired! Thief! "
+                "On-screen text: She was fired for stealing. She wasn't the thief. "
+                "Lena's phone rings. LENA (answering, calm): Yes? "
+                "VOICE ON PHONE: Ma'am, acquisition complete. You now own 51% of Vega Group. "
+                "Marcus, the CEO, drops to one knee. MARCUS: Ma'am Lena, welcome back. "
+                "VIVIAN (shocked): What?! "
+                "LENA (to camera, quiet): Now... let's talk about who burned my house down. CUT TO BLACK."
+            )
+        },
+        {
+            "scene_number": 2,
+            "title": "The Real Thief",
+            "script": (
+                "INT. VEGA GROUP BOARDROOM - NIGHT\n"
+                "Lena stands at the head of the boardroom table. Vivian is frozen. "
+                "LENA: The necklace was in your bag, Vivian. Security footage proves it. "
+                "VIVIAN (panicking): You — you were dead! "
+                "LENA: I was presumed dead. There's a difference. "
+                "Marcus slides a folder across the table. MARCUS: The fire report. Arson. "
+                "Lena opens it. Her hands shake. "
+                "LENA (whispering): The signature... it's yours. CUT TO BLACK."
+            )
+        }
+    ]
+})
+
 
 class Screenwriter:
     def __init__(self):
         self.llm = MuAPILLM()
 
-    async def develop_story(self, idea: str, user_requirement: str) -> str:
+    async def develop_story(
+        self,
+        idea: str,
+        user_requirement: str,
+        retention_mode: bool = False,
+        genre: str = "billionaire_revenge",
+        episode_number: int = 1,
+        series_bible: Optional[str] = None,
+    ) -> str:
+        if retention_mode:
+            system_prompt = (
+                "You are a ruthless retention screenwriter for vertical micro-dramas. "
+                "Every episode hooks in 3 seconds, loops a question, escalates every 5 seconds, "
+                "pays off one loop, and ends on a cliffhanger that forces the next tap. "
+                + RETENTION_RULES
+            )
+            prompt = build_episode_story_prompt(
+                idea, genre, episode_number, series_bible, user_requirement
+            )
+            return await self.llm.complete(
+                prompt, system_prompt=system_prompt, timeout=120, fallback=_FALLBACK_HOOKED_STORY
+            )
+
         system_prompt = (
             "You are a professional screenwriter and story developer. "
             "Your task is to expand a brief idea into a compelling story outline. "
@@ -74,7 +149,27 @@ Write the story outline as flowing prose."""
             prompt, system_prompt=system_prompt, timeout=120, fallback=_FALLBACK_STORY
         )
 
-    async def write_script_based_on_story(self, story: str, user_requirement: str) -> List[str]:
+    async def write_script_based_on_story(
+        self,
+        story: str,
+        user_requirement: str,
+        retention_mode: bool = False,
+        genre: str = "billionaire_revenge",
+        episode_number: int = 1,
+    ) -> List[str]:
+        if retention_mode:
+            system_prompt = (
+                "You are a ruthless retention screenwriter. "
+                "Break the story into 2-4 scene scripts that hook in 3 seconds, escalate every beat, "
+                "and end on a cliffhanger. Respond ONLY with valid JSON — no markdown, no explanation, just JSON."
+            )
+            prompt = build_episode_script_prompt(story, genre, episode_number, user_requirement)
+            raw = await self.llm.complete(
+                prompt, system_prompt=system_prompt, timeout=120, fallback=_FALLBACK_HOOKED_SCENES
+            )
+            data = parse_json_response(raw)
+            return [scene["script"] for scene in data.get("scenes", [])]
+
         system_prompt = (
             "You are a professional screenwriter. "
             "Your task is to break a story outline into individual scene scripts. "
@@ -115,3 +210,50 @@ Rules:
                 raw = raw[4:]
         data = json.loads(raw)
         return [scene["script"] for scene in data.get("scenes", [])]
+
+    async def develop_series_bible(
+        self, idea: str, genre: str = "billionaire_revenge", user_requirement: str = ""
+    ) -> str:
+        """Generate a full 10-episode series bible (JSON string)."""
+        system_prompt = (
+            "You are a series bible writer for hooked vertical micro-dramas. "
+            "Design a 10-episode arc where every episode hooks, loops, escalates, pays off one loop, "
+            "and ends on a cliffhanger. Respond ONLY with valid JSON."
+        )
+        prompt = build_series_bible_prompt(idea, genre, user_requirement)
+        fallback = json.dumps({
+            "title": "THE MAID WHO BOUGHT THE EMPIRE",
+            "logline": "A humiliated maid is fired on camera — then buys the company that fired her.",
+            "genre": genre,
+            "loop_question": "Who really owns the empire — and who burned the house down?",
+            "protagonist": "Lena Cruz, secret heiress presumed dead",
+            "antagonist": "Vivian Vega, stepmother who framed her",
+            "secret": "Lena is the true Vega heir; the fire was arson by Vivian",
+            "episodes": [
+                {
+                    "episode_number": 1,
+                    "title": "You Fired the Wrong Maid",
+                    "hook_line": "You're fired! Thief!",
+                    "open_loop": "Why does her phone say she owns 51% of Vega Group?",
+                    "beats": ["Slap at gala", "Fired on camera", "Phone: acquisition complete", "CEO kneels", "Lena takes the company"],
+                    "twist": "Vivian planted the necklace herself",
+                    "payoff": "Lena buys the company",
+                    "cliffhanger": "Now... let's talk about who burned my house down.",
+                }
+            ],
+        })
+        return await self.llm.complete(
+            prompt, system_prompt=system_prompt, timeout=180, fallback=fallback
+        )
+
+    async def audit_hook(self, script_text: str) -> dict:
+        """Score hook/retention/cliffhanger. Falls back to heuristic audit offline."""
+        system_prompt = "You are a ruthless retention editor. Respond ONLY with valid JSON."
+        prompt = build_hook_audit_prompt(script_text)
+        try:
+            raw = await self.llm.complete(
+                prompt, system_prompt=system_prompt, timeout=120, fallback=None
+            )
+            return parse_json_response(raw)
+        except Exception:
+            return heuristic_audit(script_text)
