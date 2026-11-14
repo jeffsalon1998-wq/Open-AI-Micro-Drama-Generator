@@ -565,21 +565,23 @@ python run_sample.py --characters lena      # sheet -> reference_assets + identi
 
 That call forces `reference-to-video`, attaches the sheet, and prepends a fixed identity block (appearance, costume, and "do not change facial structure, hair color, skin tone, eye color, or costume"). Canon refs are defined in `tools/character_refs.py`; `GET /api/characters` lists them with their Drive URLs and whether each is configured.
 
-| Character | Sheet | Window |
-|---|---|---|
-| Lena Cruz | `lena_character_sheet.png` | Ep 1 only (maid) |
-| Lena Cruz | `lena_suit_sheet.png` | Ep 2–10 (power suit) |
-| Vivian Vega | `vivian_character_sheet.png` | Ep 1–10 (gown) |
-| Marcus Chen | — | ⬜ |
+| Character | Costume window | Portrait (default ref) | Sheet (canon) |
+|---|---|---|---|
+| Lena Cruz | Ep 1 — maid | `lena_maid_portrait.jpg` | `lena_character_sheet.png` |
+| Lena Cruz | Ep 2–10 — power suit | `lena_suit_portrait.jpg` | `lena_suit_sheet.png` |
+| Vivian Vega | Ep 1–10 — gown | `vivian_portrait.jpg` | `vivian_character_sheet.png` |
+| Marcus Chen | Ep 1–10 — navy suit | `marcus_portrait.jpg` | `marcus_character_sheet.png` |
 
-Costume changes are handled by **wardrobe windows**, not by prompting around them: each sheet declares an episode range and the job resolves the right sheet *and* the matching costume text together.
+**Portraits, not sheets, are sent to the model.** A turnaround sheet places three faces on one canvas and reference-to-video can composite a duplicate person; a single-figure crop cannot. Sheets stay as the human-readable canon. Cut new portraits with `python server/tools/make_portraits.py`.
+
+Costume windows are resolved from the episode number, so the reference image and the costume text always agree:
 
 ```bash
-python run_sample.py --characters lena --episode 1    # maid sheet + maid prompt
-python run_sample.py --characters lena --episode 3    # suit sheet + suit prompt
+python run_sample.py                    # Ep 1, Lena, maid sheet+prompt
+python run_sample.py --episode 3        # Ep 3, suit sheet+prompt
 ```
 
-That prevents the failure mode where the reference image says maid and the prompt says suit. Configure a new sheet with `DRIVE_<NAME>_SHEET_FILE_ID` + `DRIVE_<NAME>_SHEET_URL`.
+Configure a new sheet with `DRIVE_<NAME>_SHEET_FILE_ID` + `DRIVE_<NAME>_SHEET_URL`.
 
 ### Google Drive as the image host
 
@@ -603,6 +605,14 @@ python run_sample.py --reference-file-id <FILE_ID>     # Drive -> a2e reference-
 ```
 
 A `/view` link fails immediately with `served text/html, not an image` instead of queueing a paid task that would come back wrong. Set `"verify_image_url": false` only if you know the URL is fine and want to skip the extra fetch.
+
+### `GET /api/readiness` — pre-flight, no spend
+
+```bash
+curl "localhost:8000/api/readiness?characters=lena,vivian&episode=1&verify_urls=true"
+```
+
+Reports keys, hosting, per-character reference status (portrait vs sheet), framing vs the concat target, and the coin estimate. Exit cheap: `ready=false` means a paid run would fail.
 
 ### `POST /api/image` — free style test
 

@@ -17,7 +17,13 @@ from tools.drive_host import build_reference_url
 
 @dataclass(frozen=True)
 class Costume:
-    """One look for a character, valid over an episode range."""
+    """One look for a character, valid over an episode range.
+
+    ``portrait_file_id`` is a single-figure crop and is preferred as the
+    reference image: a multi-figure sheet can make the model composite a
+    duplicate person into the shot. ``file_id`` is the full turnaround sheet and
+    is used only when no portrait exists.
+    """
 
     key: str
     file_id: str
@@ -25,12 +31,22 @@ class Costume:
     first_episode: int = 1
     last_episode: int = 10
     label: str = ""
+    portrait_file_id: str = ""
 
     def covers(self, episode: int) -> bool:
         return self.first_episode <= episode <= self.last_episode
 
     @property
+    def reference_id(self) -> str:
+        """What to send to the video provider: portrait first, sheet second."""
+        return self.portrait_file_id or self.file_id
+
+    @property
     def url(self) -> str:
+        return build_reference_url(self.reference_id) if self.reference_id else ""
+
+    @property
+    def sheet_url(self) -> str:
         return build_reference_url(self.file_id) if self.file_id else ""
 
 
@@ -55,12 +71,12 @@ class CharacterRef:
         return f"{self.name} costume: {self.costume}"
 
     def look(self, episode: int = 1) -> "CharacterRef":
-        """Resolve the sheet + costume that belongs to a given episode."""
+        """Resolve the reference + costume that belongs to a given episode."""
         for item in self.wardrobe:
             if item.covers(episode):
                 return CharacterRef(
                     name=self.name,
-                    file_id=item.file_id or self.file_id,
+                    file_id=item.reference_id or self.file_id,
                     costume=item.costume,
                     appearance=self.appearance,
                     signature_line=self.signature_line,
@@ -86,6 +102,7 @@ LENA = CharacterRef(
         Costume(
             key="maid",
             file_id=os.environ.get("DRIVE_LENA_SHEET_FILE_ID", ""),
+            portrait_file_id=os.environ.get("DRIVE_LENA_PORTRAIT_FILE_ID", ""),
             costume=(
                 "black long-sleeved maid dress with white scalloped lace trim at the apron and cuffs, "
                 "crisp white collar, white apron tied at the waist, black flat shoes, no jewelry"
@@ -97,6 +114,7 @@ LENA = CharacterRef(
         Costume(
             key="suit",
             file_id=os.environ.get("DRIVE_LENA_SUIT_SHEET_FILE_ID", ""),
+            portrait_file_id=os.environ.get("DRIVE_LENA_SUIT_PORTRAIT_FILE_ID", ""),
             costume=(
                 "tailored black power suit, single-breasted blazer with structured shoulders, "
                 "slim black trousers, crisp white silk blouse, black pointed-toe heels, "
@@ -121,6 +139,20 @@ VIVIAN = CharacterRef(
     ),
     signature_line="You're fired. Thief!",
     episodes="1-10",
+    wardrobe=(
+        Costume(
+            key="gown",
+            file_id=os.environ.get("DRIVE_VIVIAN_SHEET_FILE_ID", ""),
+            portrait_file_id=os.environ.get("DRIVE_VIVIAN_PORTRAIT_FILE_ID", ""),
+            costume=(
+                "floor-length black designer gown with structured shoulders, diamond rivière "
+                "necklace, diamond drop earrings, red lipstick, blonde bob, black heels"
+            ),
+            first_episode=1,
+            last_episode=10,
+            label="Black gown + diamonds (Ep 1-10)",
+        ),
+    ),
 )
 
 MARCUS = CharacterRef(
@@ -130,6 +162,20 @@ MARCUS = CharacterRef(
     appearance="32 years old, Black hair in a short fade, warm brown eyes, athletic build, calm bearing",
     signature_line="Ma'am Lena, welcome back.",
     episodes="1-10",
+    wardrobe=(
+        Costume(
+            key="suit",
+            file_id=os.environ.get("DRIVE_MARCUS_SHEET_FILE_ID", ""),
+            portrait_file_id=os.environ.get("DRIVE_MARCUS_PORTRAIT_FILE_ID", ""),
+            costume=(
+                "navy three-piece suit with waistcoat, crisp white shirt, no tie, "
+                "black Oxford shoes, silver watch"
+            ),
+            first_episode=1,
+            last_episode=10,
+            label="Navy three-piece suit (Ep 1-10)",
+        ),
+    ),
 )
 
 CHARACTERS: Dict[str, CharacterRef] = {
@@ -154,7 +200,9 @@ def wardrobe_map() -> dict:
                 "key": c.key,
                 "label": c.label,
                 "file_id": c.file_id or None,
+                "portrait_file_id": c.portrait_file_id or None,
                 "url": c.url or None,
+                "reference_kind": "portrait" if c.portrait_file_id else "sheet",
                 "episodes": f"{c.first_episode}-{c.last_episode}",
             }
             for c in char.wardrobe

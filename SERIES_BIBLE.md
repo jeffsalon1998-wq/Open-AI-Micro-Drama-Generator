@@ -39,34 +39,50 @@
 
 ---
 
-## Canon reference sheets (identity lock)
+## Canon cast kit (identity lock)
 
-Lena's face must survive 10 episodes. The generator locks identity with **reference-to-video**, conditioned on a turnaround sheet instead of a re-rolled first frame.
+Every main character has two artefacts in Drive:
 
-| Character | Sheet | Costume window | Drive file |
+- a **turnaround sheet** (front / three-quarter / profile) — the human-readable canon
+- a **single-figure portrait** — what actually goes to the video model
+
+Portraits are the default reference. A sheet puts three faces on one canvas, and the model can composite a duplicate person into a shot; a single-figure crop cannot.
+
+| Character | Costume window | Portrait | Sheet |
 |---|---|---|---|
-| **Lena Cruz** | `lena_character_sheet.png` | **Ep 1 only** — maid uniform | `1e3CIa8yYDG2ePiXt88jJHBRlYb0PEneJ` |
-| **Lena Cruz** | `lena_suit_sheet.png` | **Ep 2–10** — black power suit | `1oUoF051h0r46i0ADbjCJPjAWZc0-NBoK` |
-| **Vivian Vega** | `vivian_character_sheet.png` | Ep 1–10 — black gown, diamonds | `1e1d1vDrRHR0Ybp_qu_wP6nxibZPofZ-q` |
-| Marcus Chen | — | — | ⬜ not generated |
+| **Lena Cruz** | Ep 1 — maid uniform | `lena_maid_portrait.jpg` | `lena_character_sheet.png` |
+| **Lena Cruz** | Ep 2–10 — black power suit | `lena_suit_portrait.jpg` | `lena_suit_sheet.png` |
+| **Vivian Vega** | Ep 1–10 — black gown + diamonds | `vivian_portrait.jpg` | `vivian_character_sheet.png` |
+| **Marcus Chen** | Ep 1–10 — navy three-piece suit | `marcus_portrait.jpg` | `marcus_character_sheet.png` |
 
-**Locked appearance.** Lena: 26, long black hair in a neat low bun with loose temple strands, sharp dark brown eyes, strong brows, fair olive skin, high cheekbones, 5'6", slim. Vivian: 48, blonde jaw-length bob, pale blue eyes, sculpted cheekbones, matte red lipstick, tall and lean.
+**Locked appearances.** Lena: 26, long black hair in a neat low bun with loose temple strands, sharp dark brown eyes, strong brows, fair olive skin, high cheekbones, 5'6". Vivian: 48, blonde jaw-length bob, pale blue eyes, sculpted cheekbones, matte red lipstick. Marcus: 32, short fade, warm brown eyes, clean-shaven, 6'0".
 
-**Costume windows are enforced in code** (`tools/character_refs.py`), so the sheet and the prompt always agree:
+### Costume windows are enforced in code
 
-| Episode | Lena's sheet | Lena's costume |
+The sheet and the prompt resolve from the same episode number, so they cannot disagree:
+
+| Episode | Lena's reference | Lena's costume text |
 |---|---|---|
-| 1 | maid sheet | black maid dress, scalloped lace apron, white collar, flats |
-| 2–10 | suit sheet | black power suit, white silk blouse, pointed heels, gold studs |
+| 1 | `lena_maid_portrait.jpg` | black maid dress, scalloped lace apron |
+| 2–10 | `lena_suit_portrait.jpg` | black power suit, white silk blouse |
 
 ```bash
 cd server
-python run_sample.py --characters lena --episode 1      # maid, the hook
-python run_sample.py --characters lena --episode 3      # power suit
-python run_sample.py --characters lena,vivian --episode 1   # two reference assets
+python run_sample.py                            # Ep 1, Lena, maid — fully locked
+python run_sample.py --episode 3                # Ep 3, power suit
+python run_sample.py --characters lena,vivian   # two reference assets
+python run_sample.py --characters none          # disable identity locking
 ```
 
-The job attaches each sheet as `reference_assets`, forces `reference-to-video`, and prepends the identity block (appearance + the episode-correct costume + "do not change facial structure, hair color, skin tone, eye color, or costume"). `GET /api/characters` returns the wardrobe map with episode windows.
+### Regenerating portraits
+
+If a sheet changes, re-cut the portraits instead of cropping by hand:
+
+```bash
+python server/tools/make_portraits.py --figure 0   # 0=front, 1=three-quarter, 2=profile
+```
+
+It detects figures by column texture (a studio backdrop is smooth, a body is not), clamps each box to the midpoint between neighbours so a neighbour's hand cannot bleed in, and fits the crop to 900×1400 without distorting the figure.
 
 ---
 

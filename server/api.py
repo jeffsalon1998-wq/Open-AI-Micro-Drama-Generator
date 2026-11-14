@@ -101,7 +101,7 @@ class SampleRequest(BaseModel):
     negative_prompt: str = ""
     dry_run: bool = False
     verify_image_url: bool = True       # fetch the still first; fail before spending
-    characters: list[str] = []          # e.g. ["lena"] -> use canon sheets as references
+    characters: list[str] = ["lena"]    # canon refs; [] disables identity locking
     episode: int = 1                    # selects the costume (Lena: maid Ep 1-4, suit Ep 2+)
     use_identity_prompt: bool = True    # append the fixed identity block to the prompt
 
@@ -628,6 +628,27 @@ async def render_clip(req: RenderRequest, background_tasks: BackgroundTasks):
     }
     background_tasks.add_task(run_render, job_id, req)
     return GenerateResponse(job_id=job_id)
+
+
+@app.get("/api/readiness")
+async def readiness(
+    characters: str = "",
+    episode: int = 1,
+    aspect_ratio: str = "",
+    duration: int = 15,
+    verify_urls: bool = False,
+):
+    """Pre-flight: keys, hosting, character refs, framing and cost — no spend."""
+    from tools.readiness import run_checks
+
+    names = [c.strip() for c in characters.split(",") if c.strip()]
+    return run_checks(
+        characters=names,
+        episode=episode,
+        aspect_ratio=aspect_ratio,
+        duration=duration,
+        verify_urls=verify_urls,
+    )
 
 
 @app.get("/api/characters")
