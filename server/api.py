@@ -133,11 +133,56 @@ def _cost_note(duration: int) -> dict:
     return {
         "video_coins": int(round(duration * per_second)),
         "video_coin_note": (
-            f"a2e video only: {per_second:g} coins/second "
-            "(from the UI's 120 coins for 15s; calibrate with A2E_COINS_PER_SECOND)"
+            f"local estimate: {per_second:g} coins/second "
+            "(calibrate with A2E_COINS_PER_SECOND; a2e's own quote is authoritative)"
         ),
         "image": "Gemini free tier (set GEMINI_IMAGE_MODEL; billed to Google, not your a2e coins)",
     }
+
+
+async def _quoted_cost(duration: int, aspect_ratio: str, reference_urls: list[str],
+                       auto_audio: bool, prompt: str) -> dict:
+    """Ask a2e what this render costs. Free, creates nothing, never blocks a run.
+
+    ``/v1/generation/quote`` is the only authoritative price; the coins/second
+    constant is a guess that drifts whenever a2e reprices. A quote is an estimate,
+    not a reservation, so callers still see the local number if quoting fails.
+    """
+    estimate = _cost_note(duration)
+    if not reference_urls:
+        return estimate
+    try:
+        from tools.a2e_video_generator import A2EVideoGenerator
+
+        gen = A2EVideoGenerator()
+        if not gen.configured:
+            return estimate
+        payload = gen.quote_payload(
+            prompt=prompt or "pricing", video_time=duration,
+            aspect_ratio=aspect_ratio, reference_urls=reference_urls,
+            auto_add_audio=auto_audio,
+        )
+        quote = await gen.quote(payload)
+        coins = quote.get("coins")
+        if quote.get("available") and coins is not None:
+            estimate["video_coins"] = int(round(float(coins)))
+            estimate["video_coin_note"] = (
+                f"quoted by a2e for {duration}s "
+                f"({'exact' if quote.get('exact') else 'approximate'}); "
+                "a quote does not reserve credits"
+            )
+            estimate["quote"] = {
+                "coins": coins, "exact": quote.get("exact"),
+                "source": "a2e /v1/generation/quote",
+            }
+        else:
+            estimate["quote"] = {
+                "unavailable": quote.get("unavailable_reason") or "no usable quote",
+                "source": "a2e /v1/generation/quote",
+            }
+    except Exception as exc:
+        estimate["quote"] = {"error": f"{type(exc).__name__}: {exc}"}
+    return estimate
 
 
 async def run_sample(job_id: str, req: SampleRequest) -> None:
@@ -155,7 +200,6 @@ async def run_sample(job_id: str, req: SampleRequest) -> None:
 
     image_prompt = req.image_prompt or DEFAULT_IMAGE_PROMPT
     video_prompt = req.prompt or DEFAULT_VIDEO_PROMPT
-    estimate = _cost_note(req.duration)
 
     # Canon character sheets take priority over ad-hoc reference URLs.
     from tools.character_refs import get as get_character, identity_block
@@ -172,6 +216,12 @@ async def run_sample(job_id: str, req: SampleRequest) -> None:
             )
             if block and block not in video_prompt:
                 video_prompt = f"{block}\n\n{video_prompt}"
+
+    # Price with a2e's own quote endpoint (free) rather than the local constant.
+    estimate = await _quoted_cost(
+        req.duration, req.aspect_ratio, list(req.reference_image_urls or []),
+        req.auto_audio, video_prompt,
+    )
 
     try:
         if req.dry_run:
@@ -208,8 +258,8 @@ async def run_sample(job_id: str, req: SampleRequest) -> None:
 
         await emit(
             "portraits",
-            f"Planned spend: ~{estimate['video_coins']} a2e coins for the clip, "
-            f"image via Gemini ({estimate['image']})",
+            f"Planned spend: {estimate['video_coins']} a2e coins for the clip "
+            f"({estimate['video_coin_note']}); image via Gemini ({estimate['image']})",
             5,
         )
 
@@ -295,6 +345,8 @@ async def run_sample(job_id: str, req: SampleRequest) -> None:
             "has_audio": result.has_audio,
             "image_url": image_url,
             "estimated_coins": estimate,
+            # What a2e actually charged, when the task record reports it.
+            "charged_coins": result.coins,
             "progress": 100,
         }
         job["events"].append(done)
@@ -674,6 +726,7 @@ async def providers():
             "model_version": router.a2e._gen.model_version,
             "reference_mode": router.a2e.reference_mode,
             "auto_audio": router.a2e.auto_audio,
+            "extend_prompt": router.a2e._gen.extend_prompt,
         },
         "muapi": {"configured": router.muapi.available},
         "image_provider": _image_provider_info(),

@@ -8,6 +8,10 @@ otherwise surface *after* coins are spent:
 - does every character have a *portrait* reference (not just a 3-figure sheet)?
 - which costume will each character wear this episode?
 - will the output framing survive the concat step?
+
+Coin cost comes from a2e's own free ``/v1/generation/quote`` when the network
+allows it; the local coins/second figure is only a fallback. A quote is not a
+reservation, so it is reported as an estimate either way.
 """
 import os
 from typing import List, Optional
@@ -29,6 +33,99 @@ def _aspect(ratio: str) -> float:
         return a / b if b else 0.0
     except Exception:
         return 0.0
+
+
+def _reference_url_check(url: str) -> dict:
+    """Fetch the reference URL synchronously so this works inside a live loop.
+
+    ``asyncio.run`` cannot be called from a running event loop, which is exactly
+    how FastAPI serves ``/api/readiness`` - so the async verifier is driven from a
+    worker thread instead of being skipped.
+    """
+    from tools.image_host import verify_image_url
+
+    try:
+        result = _run_async(verify_image_url(url))
+    except Exception as exc:  # pragma: no cover - network/DNS failures
+        result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    ok = bool(result.get("ok"))
+    return _check(
+        "reference url",
+        "ok" if ok else "error",
+        f"{url[:60]}… {result.get('content_type') or result.get('error')}",
+        "" if ok else "use uc?id=<id>&export=download and share the file as 'anyone with the link'",
+    )
+
+
+def _run_async(coro):
+    """Run a coroutine whether or not this thread already has a running loop."""
+    import asyncio
+    import concurrent.futures
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
+def _estimate_coins(
+    wanted: List[str], episode: int, duration: int, aspect_ratio: str
+) -> tuple:
+    """Price the render with a2e's free quote endpoint, else fall back locally.
+
+    The quote is authoritative when it answers - the coins/second constant is only
+    a display default. Offline (or when a2e is unreachable) the fallback keeps the
+    pre-flight useful instead of turning it into a network test.
+    """
+    per_second = float(os.environ.get("A2E_COINS_PER_SECOND", "8"))
+    fallback = int(round(duration * per_second))
+    free_note = "images are Gemini free tier"
+
+    refs = []
+    for key in wanted:
+        resolved = get(key, episode=episode)
+        if resolved and resolved.url:
+            refs.append(resolved.url)
+    if not refs:
+        return fallback, (
+            f"~{fallback} a2e coins for {duration}s at {per_second:g}/s (local estimate — "
+            f"no reference image resolved, so a2e could not be quoted)"
+        ), "warn"
+
+    try:
+        from tools.a2e_video_generator import A2EVideoGenerator
+
+        gen = A2EVideoGenerator()
+        if not gen.configured:
+            raise RuntimeError("A2E_API_KEY not set")
+        payload = gen.quote_payload(
+            prompt=_placeholder_prompt(len(refs)),
+            video_time=duration,
+            aspect_ratio=aspect_ratio,
+            reference_urls=refs,
+            auto_add_audio=True,
+        )
+        quote = _run_async(gen.quote(payload))
+        coins = quote.get("coins")
+        if quote.get("available") and coins is not None:
+            detail = f"{coins:g} a2e coins for {duration}s (quoted by a2e; {free_note})"
+            if quote.get("exact") is False:
+                detail += " — approximate"
+            return int(round(float(coins))), detail, "ok"
+        reason = quote.get("unavailable_reason") or "no usable quote"
+        return fallback, f"~{fallback} a2e coins (local estimate; a2e quote unavailable: {reason})", "warn"
+    except Exception as exc:
+        return fallback, (
+            f"~{fallback} a2e coins (local estimate; could not reach a2e quote: "
+            f"{type(exc).__name__})"
+        ), "warn"
+
+
+def _placeholder_prompt(ref_count: int) -> str:
+    """A pricing-shaped prompt: the quote only reads pricing fields."""
+    return "placeholder beat sheet for pricing" + " x" * min(ref_count, 1)
 
 
 def run_checks(
@@ -65,10 +162,13 @@ def run_checks(
 
     # ---- hosting
     # Drive references bypass local hosting entirely: every still that reaches
-    # the video provider is a Drive URL, not a published local file.
+    # the video provider is a Drive URL, not a published local file. a2e hosting
+    # solves the same problem with the render token, so neither needs a tunnel.
     host = host_description()
     uses_drive = any(w.reference_id for c in CHARACTERS.values() for w in c.wardrobe)
-    if host["warning"] and uses_drive:
+    if host["warning"] and host.get("a2e_upload_available"):
+        checks.append(_check("image hosting", "ok", "mode=a2e — uploads to a2e storage", ""))
+    elif host["warning"] and uses_drive:
         checks.append(
             _check(
                 "image hosting",
@@ -123,9 +223,6 @@ def run_checks(
 
     # ---- reference URLs must be fetchable if asked
     if verify_urls:
-        import asyncio
-        from tools.image_host import verify_image_url
-
         targets = list(urls_to_check or [])
         if not targets:
             for key in wanted:
@@ -133,16 +230,7 @@ def run_checks(
                 if resolved and resolved.url:
                     targets.append(resolved.url)
         for url in targets:
-            result = asyncio.get_event_loop().run_until_complete(verify_image_url(url)) \
-                if not asyncio.get_event_loop().is_running() else {"ok": None, "error": "skip"}
-            checks.append(
-                _check(
-                    "reference url",
-                    "ok" if result.get("ok") else "error",
-                    f"{url[:60]}… {result.get('content_type') or result.get('error')}",
-                    "" if result.get("ok") else "use uc?id=<id>&export=download and share publicly",
-                )
-            )
+            checks.append(_reference_url_check(url))
 
     # ---- framing
     if abs(_aspect(aspect_ratio) - _aspect("9:16")) < 0.02:
@@ -161,15 +249,15 @@ def run_checks(
         )
 
     # ---- cost
-    per_second = float(os.environ.get("A2E_COINS_PER_SECOND", "8"))
-    coins = int(round(duration * per_second))
-    checks.append(
-        _check("cost", "ok",
-               f"~{coins} a2e coins for {duration}s (images are Gemini free tier)", "")
-    )
+    coins, cost_detail, cost_status = _estimate_coins(wanted, episode, duration, aspect_ratio)
+    checks.append(_check("cost", cost_status, cost_detail, ""))
 
+    # An unreachable quote is a warning about our fallback, not a reason to block
+    # a render, so cost is reported but never sets ``worst``.
     worst = "ok"
     for c in checks:
+        if c["name"] == "cost":
+            continue
         if LEVEL_ORDER[c["status"]] > LEVEL_ORDER[worst]:
             worst = c["status"]
 

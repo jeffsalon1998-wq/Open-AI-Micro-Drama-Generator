@@ -6,6 +6,8 @@ Usage:
     python run_sample.py                                  # Gemini image -> a2e video
     python run_sample.py --reference-url https://...       # reuse an existing still
     python run_sample.py --check-url https://drive.google.com/uc?id=...&export=download
+    python run_sample.py --quote                          # exact coin cost, free
+    python run_sample.py --upload series/frames/x.png     # host an image on a2e
     python run_sample.py --reference-file-id <DRIVE_ID>    # Drive -> a2e reference
 
 The key is read from server/.env. Nothing is spent unless the URL check passes.
@@ -42,11 +44,45 @@ async def main() -> int:
     ap.add_argument("--episode", type=int, default=1,
                     help="episode number; selects the costume (Lena: maid Ep 1-4, suit Ep 2+)")
     ap.add_argument("--prompt-file", help="file containing the video prompt")
+    ap.add_argument("--quote", action="store_true",
+                    help="ask a2e what the render costs (free) and exit")
+    ap.add_argument("--upload", metavar="IMAGE",
+                    help="host a local image on a2e storage and print the CDN URL")
     args = ap.parse_args()
 
     ref_url = args.reference_url
     if args.reference_file_id:
         ref_url = build_reference_url(args.reference_file_id)
+
+    if args.upload:
+        from tools.a2e_video_generator import A2EVideoGenerator
+
+        result = await A2EVideoGenerator().upload_file(args.upload)
+        print(json.dumps(result, indent=2))
+        return 0 if result["verified"]["ok"] else 2
+
+    if args.quote:
+        from tools.a2e_video_generator import A2EVideoGenerator
+        from tools.character_refs import get as get_character
+
+        urls = [ref_url] if ref_url else []
+        names = [] if (args.characters or "").lower() == "none" else [
+            n.strip().lower() for n in args.characters.split(",") if n.strip()
+        ]
+        for name in names:
+            resolved = get_character(name, episode=args.episode)
+            if resolved and resolved.url:
+                urls.append(resolved.url)
+        gen = A2EVideoGenerator()
+        payload = gen.quote_payload(
+            prompt="pricing placeholder", video_time=args.duration,
+            aspect_ratio=args.aspect_ratio, reference_urls=urls, auto_add_audio=True,
+        )
+        quote = await gen.quote(payload)
+        quote["reference_urls"] = urls
+        quote["duration"] = args.duration
+        print(json.dumps(quote, indent=2))
+        return 0 if quote.get("available") else 1
 
     if args.check_url or ref_url:
         target = args.check_url or ref_url

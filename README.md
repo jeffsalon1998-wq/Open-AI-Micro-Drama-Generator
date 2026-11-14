@@ -414,7 +414,8 @@ SSE event stream. Reconnect-safe — replays all past events on reconnect.
   "selected": "a2e",
   "effective": "a2e",
   "fallback_enabled": true,
-  "a2e": { "configured": true, "model_version": "a2e-v2", "reference_mode": false, "auto_audio": true },
+  "a2e": { "configured": true, "model_version": "a2e-v2", "reference_mode": false,
+           "auto_audio": true, "extend_prompt": false },
   "muapi": { "configured": true },
   "aspect_ratio": "9:16",
   "clip_seconds": 5,
@@ -480,6 +481,8 @@ Rendering can run on either engine, selected with `VIDEO_PROVIDER`. Both are nor
 | Identity lock | first frame from a character portrait | **`reference-to-video`** — portraits as reference assets |
 | Exact end frame | — | **`FLF2V`** (first + last frame) |
 | Continuation | — | **video extension** via `starting_video_url` |
+| Price before you spend | — | **`POST /v1/generation/quote`** — free, no task, exact coins |
+| Image hosting | — | **`/v1/r2/upload-presigned-url`** — presigned PUT on a2e's own storage |
 
 Why this matters for hooked micro-drama: a 10–15s retention beat renders as **one shot instead of three chopped clips**, with dialogue/slap-sting audio already in it.
 
@@ -513,8 +516,15 @@ The settings in the a2e GUI map to config like this:
 | Reference Files | character portraits → `reference_assets` |
 | Number of Outputs: `1` | fixed at 1 (extra outputs are extra coins) |
 | Name: timestamp | auto-generated per task |
+| *(no UI control)* | `A2E_EXTEND_PROMPT=false` — see below |
 
 **One deliberate difference:** the GUI screenshot uses `4:3` with a prompt that asks for "3:4 portrait". Those contradict each other. `VIDEO_ASPECT_RATIO` is authoritative and defaults to `9:16` — don't set `4:3` unless you actually want landscape-ish output.
+
+**Prompt rewriting is off by default.** The API's `extend_prompt` defaults to `true`, which lets the backend expand the prompt. Retention prompts are hand-authored beat sheets carrying the identity and costume locks, so `A2E_EXTEND_PROMPT` defaults to `false` here. Set it to `true` only for loose, one-line prompts.
+
+**A rate-limited poll is not a failed render.** `GET /v1/userImage2Video/{_id}` can answer `429` (query budget) or `503` with a `Retry-After` header. The client backs off and keeps polling; aborting there would abandon a task you already paid for. On timeout the error names the task id so you can check it before re-submitting — a blind retry is a double charge.
+
+**Failures say whether the coins came back.** `hasRefundCoin` / `refund_pending` are surfaced on every task failure (`A2ETaskFailed.refund_state` → `refunded` / `not refunded` / `pending` / `unknown`), so a failed render is not silently assumed to be free.
 
 ### One-clip sample (`POST /api/sample`)
 
@@ -544,15 +554,41 @@ IMAGE_PROVIDER=gemini        # auto | gemini | a2e | muapi
 - Requests force `responseModalities: ["IMAGE"]` so no chat text comes back.
 - Safety blocks surface as a readable error (`blockReason: SAFETY`) instead of an empty file.
 
-**The bridge problem:** Gemini returns base64 bytes, but a2e's video API only accepts a **public image URL**, and a2e has no upload endpoint. So every Gemini image is published before it is used:
+**The bridge problem:** Gemini returns base64 bytes, but the video API needs a **public URL**. Every Gemini image is published before it is used:
 
 | `IMAGE_HOST_MODE` | Behaviour |
 |---|---|
-| `serve` (default) | Copied to `IMAGE_SERVE_DIR` (mounted at `/images`) and returned as `PUBLIC_BASE_URL/images/{job}/{file}` |
+| `a2e` | **Uploads to a2e's own storage** via `POST /v1/r2/upload-presigned-url` + an unauthenticated `PUT`, then uses the returned `cdnUrl`. No tunnel, no Drive, no third-party account — the same token renders and hosts. |
+| `serve` | Copied to `IMAGE_SERVE_DIR` (mounted at `/images`) and returned as `PUBLIC_BASE_URL/images/{job}/{file}` — needs a tunnel or a deployed host |
 | `imgur` | Uploaded to Imgur via `IMGUR_CLIENT_ID` |
 | *(public dir)* | `IMAGE_HOST_PUBLIC_DIR` + `PUBLIC_BASE_URL` when a CDN/static mount already exists |
 
+> An earlier version of this section claimed a2e has no upload endpoint. It does — the published OpenAPI spec documents `/v1/r2/upload-presigned-url` (and its legacy alias `/v1/r2/get_upload_presigned_url`). Drive is now one option among several rather than a requirement.
+
+The presigned `uploadUrl` **already authenticates the PUT** — send the raw bytes with only a matching `Content-Type` and *no* `Authorization` header, or the signature breaks. Each presign is billed per successfully issued URL, so it is not free like the quote.
+
 `GET /api/providers` reports `hosting.warning` when the configured base URL is not reachable from the internet (localhost/private IP), so a paid run fails loudly instead of handing a2e an unreachable frame.
+
+### Pre-flight: `GET /api/readiness`
+
+Answers "will this run actually work, and what will it cost" without spending anything.
+
+```bash
+curl "localhost:8000/api/readiness?characters=lena,vivian&episode=1&verify_urls=true"
+```
+
+- `ready: false` means at least one check is `error` — do not spend.
+- `cost` is the only check whose status never blocks a run: it is priced by **a2e's own free `/v1/generation/quote`** and falls back to a local coins/second estimate when a2e is unreachable (`status: warn`). A quote is an estimate, not a reservation.
+- `verify_urls=true` fetches each reference URL for real; a Drive `/view` link or an unshared file fails here instead of mid-render.
+- `plan` echoes the episode, aspect ratio, duration, resolved characters, and coin estimate.
+
+```bash
+# exact price of the render, standalone (free)
+python run_sample.py --quote
+
+# host a local image on a2e storage and print the CDN URL
+python run_sample.py --upload series/portraits/lena_maid_portrait.jpg
+```
 
 ### Character sheets (identity lock)
 

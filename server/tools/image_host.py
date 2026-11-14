@@ -1,15 +1,18 @@
 """Publish a locally generated image so video providers can fetch it.
 
 Gemini returns image bytes, but video providers need a URL they can download.
-a2e has no upload endpoint in its API, so a public URL is mandatory.
 
 Strategy:
 
-1. ``IMAGE_HOST_MODE=serve`` (default) — assume this server is reachable and
-   return ``{PUBLIC_BASE_URL}/images/{job}/{file}``. Requires a tunnel or a
-   deployed host; the API reports whether that is likely to work.
-2. ``IMAGE_HOST_MODE=imgur`` — upload to Imgur with ``IMGUR_CLIENT_ID``.
-3. ``IMAGE_HOST_PUBLIC_DIR`` — write into a directory already served publicly
+1. ``IMAGE_HOST_MODE=a2e`` — upload to a2e's own storage with a presigned PUT
+   (``/v1/r2/upload-presigned-url``) and return the CDN URL. Self-contained: no
+   tunnel, no Drive, no third-party account, and the same token that renders the
+   video also hosts the frame.
+2. ``IMAGE_HOST_MODE=serve`` — assume this server is reachable and return
+   ``{PUBLIC_BASE_URL}/images/{job}/{file}``. Requires a tunnel or a deployed
+   host; the API reports whether that is likely to work.
+3. ``IMAGE_HOST_MODE=imgur`` — upload to Imgur with ``IMGUR_CLIENT_ID``.
+4. ``IMAGE_HOST_PUBLIC_DIR`` — write into a directory already served publicly
    (e.g. an S3/nginx mount), returning ``PUBLIC_BASE_URL`` + relative path.
 
 ``publish_image`` always returns a URL and says how it was produced, so a run
@@ -50,19 +53,23 @@ def describe() -> dict:
     """Surface the publish strategy so the UI/API can warn before a paid run."""
     mode = (os.environ.get("IMAGE_HOST_MODE") or "serve").lower()
     base = _base_url()
+    a2e_ready = bool(os.environ.get("A2E_API_KEY"))
     return {
         "mode": mode,
+        "a2e_upload_available": a2e_ready and mode == "a2e",
         "public_base_url": base or None,
         "public_base_url_reachable": is_public_url(base) if base else False,
         "imgur_configured": bool(os.environ.get("IMGUR_CLIENT_ID")),
         "public_dir": os.environ.get("IMAGE_HOST_PUBLIC_DIR") or None,
         "warning": (
             None
-            if (mode == "imgur" and os.environ.get("IMGUR_CLIENT_ID"))
+            if (mode == "a2e" and os.environ.get("A2E_API_KEY"))
+            or (mode == "imgur" and os.environ.get("IMGUR_CLIENT_ID"))
             or (base and is_public_url(base))
             or os.environ.get("IMAGE_HOST_PUBLIC_DIR")
             else "Gemini images are local files; the video provider needs a public URL. "
-                 "Set PUBLIC_BASE_URL (tunnel/deployed host), IMAGE_HOST_MODE=imgur with "
+                 "Set IMAGE_HOST_MODE=a2e (uploads to a2e's own storage, no tunnel needed), "
+                 "PUBLIC_BASE_URL (tunnel/deployed host), IMAGE_HOST_MODE=imgur with "
                  "IMGUR_CLIENT_ID, or IMAGE_HOST_PUBLIC_DIR."
         ),
     }
@@ -79,6 +86,25 @@ async def publish_image(
         raise ImageHostError(f"image not found: {local_path}")
 
     mode = (os.environ.get("IMAGE_HOST_MODE") or "serve").lower()
+
+    if mode == "a2e":
+        # Hosting and rendering on the same platform: one credential, no tunnel.
+        from tools.a2e_video_generator import A2EVideoGenerator
+
+        gen = A2EVideoGenerator()
+        if not gen.configured:
+            raise ImageHostError("IMAGE_HOST_MODE=a2e but A2E_API_KEY is empty.")
+        try:
+            uploaded = await gen.upload_file(str(path))
+        except Exception as exc:
+            raise ImageHostError(f"a2e upload failed: {exc}") from exc
+        if not uploaded.get("verified", {}).get("ok"):
+            raise ImageHostError(
+                f"a2e returned a CDN URL that does not serve bytes "
+                f"({uploaded.get('url')}): {uploaded.get('verified')}"
+            )
+        print(f"[image] hosted on a2e: {uploaded['url']} ({uploaded['bytes']} bytes)")
+        return uploaded["url"]
 
     if mode == "imgur":
         client_id = os.environ.get("IMGUR_CLIENT_ID", "")
