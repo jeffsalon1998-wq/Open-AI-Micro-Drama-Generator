@@ -6,8 +6,7 @@ from typing import Callable, Awaitable, List, Optional
 from agents.storyboard_artist import StoryboardArtist
 from interfaces.character import CharacterInScene
 from interfaces.shot import ShotDescription
-from tools.muapi_image_generator import MuAPIImageGenerator
-from tools.video_provider import get_video_provider
+from tools.video_provider import get_image_provider, get_video_provider
 from tools.muapi_uploader import upload_image_from_url
 from utils.video import concatenate_videos, download_video
 
@@ -20,7 +19,8 @@ class Script2VideoPipeline:
         # MuAPI is optional: an a2e-only deployment needs A2E_API_KEY instead.
         self.api_key = api_key or os.environ.get("MUAPI_KEY", "")
         self.storyboard_artist = StoryboardArtist()
-        self.image_gen = MuAPIImageGenerator(api_key=self.api_key)
+        # Stills come from the a2e site's own image API when configured, else MuAPI.
+        self.image_gen = get_image_provider(api_key=self.api_key)
         self.video_gen = get_video_provider(api_key=self.api_key)
 
     # Vertical-first delivery. Micro-drama lives in 9:16; override with
@@ -162,7 +162,8 @@ class Script2VideoPipeline:
             "High quality, detailed face, neutral background, studio lighting, "
             "character reference sheet, full face visible."
         )
-        return await self.image_gen.generate_image(prompt, aspect_ratio="2:3")
+        # Portraits match the delivery ratio so the cast sheet reads correctly.
+        return await self.image_gen.generate_image(prompt, aspect_ratio=self.ASPECT_RATIO)
 
     async def _generate_first_frame(
         self,
@@ -199,8 +200,8 @@ class Script2VideoPipeline:
 
         if reference_url:
             try:
-                return await self.image_gen.generate_image_with_reference(
-                    full_prompt, reference_url, aspect_ratio=self.ASPECT_RATIO
+                return await self.image_gen.generate_image(
+                    full_prompt, aspect_ratio=self.ASPECT_RATIO, reference_url=reference_url
                 )
             except Exception as e:
                 print(f"Warning: reference image generation failed, falling back to T2I: {e}")
@@ -223,9 +224,10 @@ class Script2VideoPipeline:
         # Build video prompt from motion + audio descriptions
         video_prompt = f"{shot.motion_desc}. {shot.audio_desc}"
 
-        # Upload the first frame to get a stable MuAPI URL if needed
+        # Frames from a2e are already public URLs; MuAPI frames get re-hosted so
+        # the video model can read them.
         frame_url = shot.first_frame_url
-        if not frame_url.startswith("https://api.muapi.ai"):
+        if not frame_url.startswith("https://api.muapi.ai") and self.api_key:
             try:
                 frame_url = await upload_image_from_url(frame_url, self.api_key)
             except Exception as e:

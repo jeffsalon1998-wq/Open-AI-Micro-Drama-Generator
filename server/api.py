@@ -77,6 +77,205 @@ class GenerateResponse(BaseModel):
     job_id: str
 
 
+class SampleRequest(BaseModel):
+    """One-clip smoke test: image (site's own generator) -> a2e video.
+
+    Defaults are the cheap, safe path: 9:16, one 15s clip, sound on.
+    Set ``dry_run=True`` to see the exact plan and coin estimate without spending.
+    """
+
+    prompt: str = ""                    # video prompt; defaults to the Ep 1 hook
+    image_prompt: str = ""              # still prompt; defaults to the hook frame
+    aspect_ratio: str = "9:16"
+    duration: int = 15
+    auto_audio: bool = True
+    model_mode: str = "image"           # image | reference
+    reference_image_urls: list[str] = []
+    skip_image: bool = False            # reuse an existing still instead
+    image_url: str = ""
+    negative_prompt: str = ""
+    dry_run: bool = False
+
+
+DEFAULT_IMAGE_PROMPT = """Cinematic vertical 9:16 poster frame, photoreal. Interior of a luxury gala ballroom at night, gold chandeliers, blurred crowd in evening wear behind shallow depth of field. Center frame: LENA CRUZ, 26, long black hair pulled back, sharp dark eyes, fair olive skin, wearing a black-and-white maid uniform with apron. Her head is turned slightly from a slap; one cheek is flushed. She is NOT crying - jaw set, eyes cold and steady, staring just past camera. To her left, out of focus: VIVIAN VEGA, 48, blonde bob, red lipstick, diamond necklace, hand still raised mid-slap. Dramatic amber key light from the left, deep cobalt shadows. 50mm look, film grain. No text, no watermark, no extra fingers."""
+
+DEFAULT_VIDEO_PROMPT = """Create an exactly 15-second cinematic 9:16 vertical clip, photoreal, single continuous shot.
+
+0:00-0:03  HOOK. Vivian's open palm SLAPS Lena across the face. Hard impact, hair snaps sideways, a glass on a passing tray topples. Handheld jolt. The frame lands on Lena's stunned face. Do not cut yet.
+
+0:03-0:07  Vivian jabs a finger at her, diamond necklace swinging. Lena's jaw tightens. She does NOT flinch, does NOT cry. Guests behind them turn, phones rise.
+
+0:07-0:11  Lena slowly lifts her head. Her eyes lock on Vivian - cold, unblinking. A slow push-in on Lena's face.
+
+0:11-0:15  Lena's phone buzzes in her apron pocket. Without breaking eye contact she pulls it out, glances down.
+
+DIALOGUE: Vivian (shouting, first lines): "You're fired! Thief!" Lena (quiet, final line): "You just fired the owner."
+
+AUDIO: Sharp slap, room gasps, distant string quartet, phone buzz, deep sub drop on the last line.
+
+CAMERA: Handheld at first, then locked-off slow push-in. Vertical framing, faces in upper third.
+
+No morphing faces, no changing hair or eye color, no extra characters, no text overlay, no watermark, no camera shake after 0:07."""
+
+
+def _coin_estimate(duration: int) -> dict:
+    """Rough spend preview, from the UI: 120 coins for a 15s generation."""
+    per_second = float(os.environ.get("A2E_COINS_PER_SECOND", "8"))
+    video = int(round(duration * per_second))
+    image = int(os.environ.get("A2E_COINS_PER_IMAGE", "10"))
+    return {
+        "image": image,
+        "video": video,
+        "total": image + video,
+        "assumption": f"{per_second:g} coins/second video, {image} coins/image "
+                      "(calibrate with A2E_COINS_PER_SECOND / A2E_COINS_PER_IMAGE)",
+    }
+
+
+async def run_sample(job_id: str, req: SampleRequest) -> None:
+    """Image -> one video clip, end to end, for a first paid smoke test."""
+    from tools.video_provider import get_image_provider, get_video_provider
+
+    job = jobs[job_id]
+    queue: asyncio.Queue = job["queue"]
+
+    async def emit(stage: str, message: str, progress: int, **extra) -> None:
+        event = {"type": "progress", "stage": stage, "message": message, "progress": progress}
+        event.update(extra)
+        job["events"].append(event)
+        await queue.put(event)
+
+    image_prompt = req.image_prompt or DEFAULT_IMAGE_PROMPT
+    video_prompt = req.prompt or DEFAULT_VIDEO_PROMPT
+    estimate = _coin_estimate(req.duration)
+
+    try:
+        if req.dry_run:
+            plan = {
+                "aspect_ratio": req.aspect_ratio,
+                "duration": req.duration,
+                "auto_audio": req.auto_audio,
+                "model_mode": req.model_mode,
+                "image": {
+                    "provider": get_image_provider().primary,
+                    "aspect_ratio": req.aspect_ratio,
+                    "prompt_chars": len(image_prompt),
+                    "skipped": req.skip_image,
+                },
+                "video": {
+                    "provider": get_video_provider().primary.name,
+                    "generation_mode": "reference-to-video"
+                    if req.model_mode == "reference" and req.reference_image_urls
+                    else "image-to-video",
+                    "video_time": req.duration,
+                    "auto_add_audio": req.auto_audio,
+                    "prompt_chars": len(video_prompt),
+                },
+                "estimated_coins": estimate,
+            }
+            job["status"] = "completed"
+            done = {"type": "complete", "dry_run": True, "plan": plan, "progress": 100}
+            job["events"].append(done)
+            await queue.put(done)
+            return
+
+        await emit(
+            "portraits",
+            f"Estimated spend: ~{estimate['total']} coins "
+            f"(image ~{estimate['image']}, video ~{estimate['video']})",
+            5,
+        )
+
+        if req.skip_image and req.image_url:
+            image_url = req.image_url
+            await emit("frames", "Reusing supplied still", 25)
+        elif req.model_mode == "reference" and req.reference_image_urls:
+            image_url = req.reference_image_urls[0]
+            await emit("frames", "Using supplied reference still (no image generation)", 25)
+        else:
+            await emit("frames", "Generating the hook frame in 9:16...", 10)
+            image_url = await get_image_provider().generate_image(
+                image_prompt, aspect_ratio=req.aspect_ratio
+            )
+            await emit("frames", f"Hook frame ready: {image_url[:90]}", 35, image_url=image_url)
+
+        await emit("video", f"Rendering one {req.duration}s clip in {req.aspect_ratio}...", 40)
+        negative = req.negative_prompt or (
+            "blurry, distorted, morphing face, changing eye color, text, watermark, extra fingers"
+        )
+        gen = get_video_provider()
+        if req.model_mode == "reference" and req.reference_image_urls:
+            result = await gen.a2e.generate_reference_to_video(
+                prompt=video_prompt,
+                reference_urls=req.reference_image_urls,
+                video_time=req.duration,
+                aspect_ratio=req.aspect_ratio,
+                negative_prompt=negative,
+                auto_add_audio=req.auto_audio,
+            )
+        else:
+            result = await gen.generate_from_image(
+                prompt=video_prompt,
+                image_url=image_url,
+                duration=req.duration,
+                aspect_ratio=req.aspect_ratio,
+                negative_prompt=negative,
+                auto_audio=req.auto_audio,
+            )
+
+        await emit("concat", f"Task {result.task_id} complete - caching locally", 85)
+
+        out_dir = OUTPUTS_DIR / job_id
+        out_dir.mkdir(parents=True, exist_ok=True)
+        from utils.video import download_video
+        await download_video(result.url, str(out_dir / "sample.mp4"))
+
+        job["status"] = "completed"
+        job["video_url"] = f"/outputs/{job_id}/sample.mp4"
+        done = {
+            "type": "complete",
+            "video_url": job["video_url"],
+            "source_url": result.url,
+            "task_id": result.task_id,
+            "provider": result.provider,
+            "duration_seconds": result.duration_seconds,
+            "has_audio": result.has_audio,
+            "image_url": image_url,
+            "estimated_coins": estimate,
+            "progress": 100,
+        }
+        job["events"].append(done)
+        await queue.put(done)
+
+    except Exception as exc:
+        job["status"] = "failed"
+        job["error"] = str(exc)
+        event = {"type": "error", "message": str(exc), "progress": -1}
+        job["events"].append(event)
+        await queue.put(event)
+    finally:
+        await queue.put(None)
+
+
+@app.post("/api/sample", response_model=GenerateResponse)
+async def sample_clip(req: SampleRequest, background_tasks: BackgroundTasks):
+    """Render ONE sample clip: a2e image -> a2e video, 9:16.
+
+    Call with ``{"dry_run": true}`` first to inspect the plan and coin estimate
+    without spending, then again with ``dry_run: false``.
+    """
+    job_id = str(uuid.uuid4())
+    jobs[job_id] = {
+        "status": "running",
+        "events": [],
+        "video_url": None,
+        "error": None,
+        "queue": asyncio.Queue(),
+    }
+    background_tasks.add_task(run_sample, job_id, req)
+    return GenerateResponse(job_id=job_id)
+
+
 class RenderRequest(BaseModel):
     """Render one clip straight from a finished prompt — no screenwriter involved.
 
@@ -273,6 +472,18 @@ async def run_render(job_id: str, req: RenderRequest) -> None:
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+def _image_provider_info() -> dict:
+    from tools.video_provider import ImageProviderRouter
+    r = ImageProviderRouter()
+    return {
+        "requested": r.requested,
+        "effective": r.primary,
+        "a2e": {"configured": r.a2e.configured, "model_type": r.a2e.model_type,
+                "resolution": r.a2e.resolution},
+        "muapi": {"configured": bool(r._muapi_key)},
+    }
+
+
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "service": "microdrama-api"}
@@ -315,6 +526,7 @@ async def providers():
             "auto_audio": router.a2e.auto_audio,
         },
         "muapi": {"configured": router.muapi.available},
+        "image_provider": _image_provider_info(),
         "aspect_ratio": os.environ.get("VIDEO_ASPECT_RATIO", "9:16"),
         "clip_seconds": int(os.environ.get("CLIP_SECONDS", "5")),
         "retention_clip_seconds": int(os.environ.get("RETENTION_CLIP_SECONDS", "15")),

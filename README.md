@@ -516,6 +516,35 @@ The settings in the a2e GUI map to config like this:
 
 **One deliberate difference:** the GUI screenshot uses `4:3` with a prompt that asks for "3:4 portrait". Those contradict each other. `VIDEO_ASPECT_RATIO` is authoritative and defaults to `9:16` — don't set `4:3` unless you actually want landscape-ish output.
 
+### One-clip sample (`POST /api/sample`)
+
+The cheapest way to validate the look before rendering an episode: **a2e image → a2e video, one 9:16 clip**.
+
+```bash
+# 1) dry run — no spend, shows the plan + coin estimate
+curl -X POST localhost:8000/api/sample -H 'Content-Type: application/json' -d '{"dry_run": true}'
+# 2) the real thing
+curl -X POST localhost:8000/api/sample -H 'Content-Type: application/json' -d '{"dry_run": false}'
+```
+
+Defaults: `aspect_ratio=9:16`, `duration=15`, `auto_audio=true`, `model_mode=image`. The prompt is the Episode 1 hook (slap → "You're fired, thief!" → "You just fired the owner"), so the sample doubles as a real asset. Stream progress on `GET /api/status/{job_id}`; the clip is cached at `outputs/{job_id}/sample.mp4`.
+
+### Images come from the site's own generator
+
+`IMAGE_PROVIDER = auto | a2e | muapi` (auto → a2e when `A2E_API_KEY` is set). Stills use a2e's text-to-image API, so the whole pipeline runs on one site and one balance:
+
+| Purpose | Endpoint |
+|---------|----------|
+| Create image task | `POST /v1/userText2Image/start` |
+| Task detail | `GET /v1/userText2Image/{_id}` |
+| List tasks | `GET /v1/userText2Image/allRecords` |
+| Batch details | `POST /v1/userText2Image/batchDetail` |
+| Delete task | `DELETE /v1/userText2Image/{_id}` |
+
+`model_type` accepts `a2e` (auto), `zimage`, `seedream` (`model_version` `4.5` / `5.0` / `5.0-pro`), `aspect_ratio` accepts `1:1 4:3 3:4 16:9 9:16 2:3 3:2 21:9`, `resolution` accepts `1K 1080P 2K 3K 4K`.
+
+**On "Muse":** the published a2e image contract has no `muse` model_type — only `a2e`, `zimage`, `seedream`. Sending an undocumented enum is a 400, so `A2E_IMAGE_MODEL_TYPE=a2e` (auto selection) is the default. If the site exposes Muse under another name, override the env var rather than guessing.
+
 ### Cost control
 
 Every shot is one billed generation, so spend is `scenes x shots x seconds`:

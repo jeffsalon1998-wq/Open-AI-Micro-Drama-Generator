@@ -25,6 +25,7 @@ a2e extras (ignored by muapi):
 import os
 from typing import List, Optional
 
+from tools.a2e_image_generator import A2EImageGenerator
 from tools.a2e_video_generator import A2EVideoGenerator, A2EError, VideoResult
 from tools.muapi_video_generator import MuAPIVideoGenerator
 
@@ -177,8 +178,69 @@ def get_video_provider(api_key: Optional[str] = None) -> VideoProviderRouter:
     return VideoProviderRouter(api_key=api_key)
 
 
+class ImageProviderRouter:
+    """Same idea for stills: a2e's own image generator, else MuAPI.
+
+    IMAGE_PROVIDER = auto | a2e | muapi   (auto -> a2e when A2E_API_KEY is set)
+    The a2e site's image models (a2e auto / zimage / seedream) are preferred so the
+    whole pipeline can run on a single site and a single paid balance.
+    """
+
+    name = "image-router"
+
+    def __init__(self, api_key: Optional[str] = None):
+        self.a2e = A2EImageGenerator(api_key=os.environ.get("A2E_API_KEY", ""))
+        self._muapi_key = api_key or os.environ.get("MUAPI_KEY", "")
+        self._muapi = None
+        self.requested = (os.environ.get("IMAGE_PROVIDER") or "auto").strip().lower()
+
+    @property
+    def muapi(self):
+        if self._muapi is None:
+            from tools.muapi_image_generator import MuAPIImageGenerator
+            if not self._muapi_key:
+                raise RuntimeError("MUAPI_KEY is not set; MuAPI image provider unavailable.")
+            self._muapi = MuAPIImageGenerator(api_key=self._muapi_key)
+        return self._muapi
+
+    @property
+    def primary(self):
+        if self.requested == "a2e":
+            return "a2e"
+        if self.requested == "muapi":
+            return "muapi"
+        return "a2e" if self.a2e.configured else "muapi"
+
+    @property
+    def ready(self) -> bool:
+        return self.a2e.configured or bool(self._muapi_key)
+
+    async def generate_image(self, prompt: str, aspect_ratio: str = "9:16", reference_url: Optional[str] = None) -> str:
+        """Return an image URL. Character references are honoured where supported."""
+        if self.primary == "a2e":
+            if reference_url:
+                result = await self.a2e.generate_image(
+                    prompt, aspect_ratio=aspect_ratio, input_images=[reference_url]
+                )
+            else:
+                result = await self.a2e.generate_image(prompt, aspect_ratio=aspect_ratio)
+            print(f"[image] a2e {result.task_id} ({aspect_ratio})")
+            return result.url
+        if reference_url:
+            return await self.muapi.generate_image_with_reference(
+                prompt, reference_url, aspect_ratio=aspect_ratio
+            )
+        return await self.muapi.generate_image(prompt, aspect_ratio=aspect_ratio)
+
+
+def get_image_provider(api_key: Optional[str] = None) -> ImageProviderRouter:
+    return ImageProviderRouter(api_key=api_key)
+
+
 __all__ = [
     "A2EAdapter",
+    "ImageProviderRouter",
+    "get_image_provider",
     "A2EError",
     "MuAPIAdapter",
     "VideoProviderRouter",
