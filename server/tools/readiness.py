@@ -36,25 +36,89 @@ def _aspect(ratio: str) -> float:
 
 
 def _reference_url_check(url: str) -> dict:
-    """Fetch the reference URL synchronously so this works inside a live loop.
+    """Fetch the reference URL and validate it the way a2e will.
 
-    ``asyncio.run`` cannot be called from a running event loop, which is exactly
-    how FastAPI serves ``/api/readiness`` - so the async verifier is driven from a
-    worker thread instead of being skipped.
+    Two failures hide behind one URL, and only the first is obvious:
+
+    * the URL does not serve image bytes (Drive ``/view`` links, unshared files);
+    * the bytes are an image but *out of spec* — a 364 px-wide portrait is
+      rejected by the a2e validator after the task is submitted, i.e. after the
+      coins are committed.
+
+    ``verify_image_url`` only catches the first, so the dimensions are checked
+    here too (tools/reference_spec).
     """
     from tools.image_host import verify_image_url
+    from tools.reference_spec import check_url
 
     try:
         result = _run_async(verify_image_url(url))
     except Exception as exc:  # pragma: no cover - network/DNS failures
         result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-    ok = bool(result.get("ok"))
+
+    if not result.get("ok"):
+        return _check(
+            "reference url",
+            "error",
+            f"{url[:60]}… {result.get('content_type') or result.get('error')}",
+            "use uc?id=<id>&export=download and share the file as 'anyone with the link'",
+        )
+
+    try:
+        spec = _run_async(_check_url_spec(url))
+    except Exception as exc:  # pragma: no cover
+        spec = {"ok": None, "error": f"{type(exc).__name__}: {exc}"}
+
+    if spec.get("ok") is False:
+        return _check(
+            "reference url",
+            "error",
+            f"{url[:50]}… {spec.get('width')}x{spec.get('height')} — "
+            f"{'; '.join(spec.get('problems') or [spec.get('error')])}",
+            "re-crop at 600-2400 px per side (python tools/make_portraits.py)",
+        )
+    if spec.get("ok") is None:
+        return _check(
+            "reference url",
+            "warn",
+            f"{url[:60]}… served an image but dimensions could not be verified",
+            "",
+        )
+    warn = ("; " + "; ".join(spec["warnings"])) if spec.get("warnings") else ""
     return _check(
         "reference url",
-        "ok" if ok else "error",
-        f"{url[:60]}… {result.get('content_type') or result.get('error')}",
-        "" if ok else "use uc?id=<id>&export=download and share the file as 'anyone with the link'",
+        "ok",
+        f"{url[:50]}… {spec['width']}x{spec['height']} "
+        f"{spec.get('pixels', 0):,} px, within a2e's limits{warn}",
+        "",
     )
+
+
+async def _check_url_spec(url: str) -> dict:
+    """Run the blocking header check off the event loop."""
+    import asyncio
+
+    from tools.reference_spec import check_url
+
+    return await asyncio.get_running_loop().run_in_executor(None, check_url, url)
+
+
+def _local_portrait(key: str, episode: int):
+    """Best-effort path to the on-disk crop backing this character's reference."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2] / "series" / "portraits"
+    if not root.is_dir():
+        return None
+    candidates = [f"{key}_portrait.jpg"]
+    if key == "lena":
+        candidates = (["lena_maid_portrait.jpg"] if episode == 1
+                      else ["lena_suit_portrait.jpg"]) + candidates
+    for name in candidates:
+        path = root / name
+        if path.exists():
+            return path
+    return None
 
 
 def _run_async(coro):
@@ -220,6 +284,23 @@ def run_checks(
                 "" if has_portrait else "run tools/make_portraits.py and set the portrait id",
             )
         )
+
+        # The local crop, when we have it, is the same file that was uploaded —
+        # so its dimensions predict what a2e's validator will say.
+        local = _local_portrait(key, episode)
+        if local is not None:
+            from tools.reference_spec import check_file
+
+            verdict = check_file(str(local))
+            checks.append(
+                _check(
+                    f"reference size:{key}",
+                    "ok" if verdict.ok else "error",
+                    f"{local.name} {verdict.summary()}",
+                    "" if verdict.ok else "; ".join(verdict.problems)
+                    + " — re-run python tools/make_portraits.py",
+                )
+            )
 
     # ---- reference URLs must be fetchable if asked
     if verify_urls:

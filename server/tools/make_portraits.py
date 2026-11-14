@@ -20,6 +20,13 @@ from pathlib import Path
 from PIL import Image
 import numpy as np
 
+try:                                    # imported as a module (`tools.make_portraits`)
+    from tools import reference_spec
+except ImportError:                     # run as a script (`python tools/make_portraits.py`)
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from tools import reference_spec
+
 DEFAULT_SHEETS = [
     ("lena_character_sheet.png", "lena_maid_portrait.jpg"),
     ("lena_suit_sheet.png", "lena_suit_portrait.jpg"),
@@ -27,9 +34,12 @@ DEFAULT_SHEETS = [
     ("marcus_character_sheet.png", "marcus_portrait.jpg"),
 ]
 
-MAX_WIDTH = 900
-MAX_HEIGHT = 1400      # keep a standing figure from becoming a 1:4 ribbon
-MIN_SHORT_SIDE = 480   # upscale only if the crop is genuinely small
+# a2e validates reference stills at 600-2400 px per side with a 36 MP ceiling
+# (see tools/reference_spec.py). A crop outside that box is rejected *after* the
+# task is submitted, so the cropper must never emit one.
+MIN_SHORT_SIDE = reference_spec.MIN_SIDE      # 600
+MAX_LONG_SIDE = reference_spec.MAX_SIDE       # 2400
+MAX_ASPECT = 4.0        # 600x2400 is the narrowest box both limits allow
 
 
 def detect_figures(image: Image.Image, max_figures: int = 3) -> list:
@@ -103,15 +113,27 @@ def crop_figure(image: Image.Image, box, pad_x: float = 0.04, pad_y: float = 0.0
         (max(0, x0 - dx), max(0, y0 - dy), min(image.width, x1 + dx), min(image.height, y1 + dy))
     ).convert("RGB")
 
-    # Fit inside MAX_WIDTH x MAX_HEIGHT without distorting the figure.
-    scale = min(MAX_WIDTH / crop.width, MAX_HEIGHT / crop.height)
-    if scale > 1.0:
-        scale = min(scale, 2.0)                     # avoid blowing up a small crop
-        if min(crop.size) * scale < MIN_SHORT_SIDE:
-            scale = min(MIN_SHORT_SIDE / min(crop.size), 2.0)
+    # ---- fit into the validator's box -----------------------------------
+    # Two constraints pull in opposite directions: the short side must reach
+    # 600 px, the long side must stay under 2400 px. A narrow crop (a standing
+    # figure at 1:3.5) satisfies both; at 1:4.2 it cannot, so trim the long side
+    # to 1:4 before scaling rather than emitting a rejected file.
+    w, h = crop.size
+    if h > w and h / w > MAX_ASPECT:
+        keep = int(w * MAX_ASPECT)
+        top = (h - keep) // 2
+        crop = crop.crop((0, top, w, top + keep))
+        w, h = crop.size
+
+    scale = 1.0
+    if min(w, h) < MIN_SHORT_SIDE:
+        scale = MIN_SHORT_SIDE / min(w, h)          # upscale to clear the minimum
+    if max(w, h) * scale > MAX_LONG_SIDE:
+        scale = MAX_LONG_SIDE / max(w, h)           # never breach the maximum
+
     if abs(scale - 1.0) > 0.01:
         crop = crop.resize(
-            (max(1, int(crop.width * scale)), max(1, int(crop.height * scale))), Image.LANCZOS
+            (max(1, int(round(w * scale))), max(1, int(round(h * scale)))), Image.LANCZOS
         )
     return crop
 
@@ -133,7 +155,15 @@ def make_portraits(frames_dir: str, out_dir: str, figure: int = 0) -> list:
         crop = crop_figure(image, boxes[index])
         dst = Path(out_dir) / out_name
         crop.save(dst, format="JPEG", quality=92, optimize=True)
-        print(f"{sheet}: {len(boxes)} figure(s) -> {dst} {crop.size} {os.path.getsize(dst)//1024} KB")
+        check = reference_spec.check_file(str(dst))
+        verdict = "ok" if check.ok else "REJECTED: " + "; ".join(check.problems)
+        warn = (" | " + "; ".join(check.warnings)) if check.warnings else ""
+        print(f"{sheet}: {len(boxes)} figure(s) -> {dst} {crop.size} "
+              f"{os.path.getsize(dst) // 1024} KB [{verdict}{warn}]")
+        if not check.ok:
+            raise SystemExit(
+                f"refusing to ship an out-of-spec reference: {dst} — {verdict}"
+            )
         written.append(str(dst))
     return written
 

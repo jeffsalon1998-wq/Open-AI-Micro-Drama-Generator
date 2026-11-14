@@ -578,9 +578,31 @@ curl "localhost:8000/api/readiness?characters=lena,vivian&episode=1&verify_urls=
 ```
 
 - `ready: false` means at least one check is `error` — do not spend.
+- `reference size:<character>` validates each crop against a2e's **real** input rules (see below). A 364 px portrait is rejected by the uploader; catching it here is the difference between a warning and 120 spent coins.
 - `cost` is the only check whose status never blocks a run: it is priced by **a2e's own free `/v1/generation/quote`** and falls back to a local coins/second estimate when a2e is unreachable (`status: warn`). A quote is an estimate, not a reservation.
-- `verify_urls=true` fetches each reference URL for real; a Drive `/view` link or an unshared file fails here instead of mid-render.
+- `verify_urls=true` fetches each reference URL for real and reads the image header; a Drive `/view` link, an unshared file, or an out-of-spec image fails here instead of mid-render.
 - `plan` echoes the episode, aspect ratio, duration, resolved characters, and coin estimate.
+
+### Reference image rules (a2e's validator)
+
+The a2e uploader is a validator, and the API enforces the same limits *after* submission — which means a bad reference costs coins before you learn about it. The constraints, encoded once in `server/tools/reference_spec.py` and enforced by `make_portraits.py`, the pre-flight, and the API:
+
+| Rule | Value |
+|---|---|
+| Formats | JPG, PNG, WEBP, GIF |
+| Size per side | **600–2400 px** |
+| Total pixels | ≤ 36,000,000 |
+| File size | ≤ 30 MB |
+
+A standing-figure crop is naturally narrow, and the two limits fight each other: at 1:4 a 600 px short side is exactly a 2400 px long side, so anything narrower than 1:4 physically cannot satisfy both. The cropper trims the long side to 1:4 before scaling rather than emitting a file that will be rejected.
+
+```bash
+# re-cut all portraits and verify them against the limits in one pass
+python tools/make_portraits.py
+# lena_character_sheet.png: 3 figure(s) -> series/portraits/lena_maid_portrait.jpg (600, 2009) [ok]
+```
+
+`check_file()` / `check_url()` in that module read dimensions from a 14-byte header (no Pillow needed), so the pre-flight can validate a remote Drive file before a render is queued.
 
 ```bash
 # exact price of the render, standalone (free)
@@ -593,6 +615,8 @@ python run_sample.py --upload series/portraits/lena_maid_portrait.jpg
 ### Character sheets (identity lock)
 
 A turnaround sheet per main character keeps a face identical across shots and episodes. Sheets are public Drive files referenced by direct-download URL.
+
+The **single-figure portrait** is what actually ships: a sheet puts three faces on one canvas and the model can composite a duplicate person into the shot. Portraits are cut by `tools/make_portraits.py`, which now also enforces a2e's 600–2400 px limit and refuses to write an out-of-spec file.
 
 ```bash
 cd server

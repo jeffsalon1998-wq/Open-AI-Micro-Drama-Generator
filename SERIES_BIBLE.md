@@ -82,7 +82,20 @@ If a sheet changes, re-cut the portraits instead of cropping by hand:
 python server/tools/make_portraits.py --figure 0   # 0=front, 1=three-quarter, 2=profile
 ```
 
-It detects figures by column texture (a studio backdrop is smooth, a body is not), clamps each box to the midpoint between neighbours so a neighbour's hand cannot bleed in, and fits the crop to 900×1400 without distorting the figure.
+It detects figures by column texture (a studio backdrop is smooth, a body is not), clamps each box to the midpoint between neighbours so a neighbour's hand cannot bleed in, and fits the crop to a2e's reference limits.
+
+### Reference-image limits (why the crops are 600 px wide)
+
+a2e validates reference stills at **600–2400 px per side, ≤36 MP, JPG/PNG/WEBP/GIF**. The validator sits in the web UI, but the API enforces the same rule *after* submission — so an out-of-spec portrait burns coins before you find out. The first cut of these portraits was 364–480 px on the short side and would have been rejected.
+
+| Portrait | Delivered size |
+|---|---|
+| `lena_maid_portrait.jpg` | 600×2009 |
+| `lena_suit_portrait.jpg` | 600×2251 |
+| `vivian_portrait.jpg` | 600×2400 |
+| `marcus_portrait.jpg` | 669×941 (native, no upscale) |
+
+A standing figure is naturally narrow, and the two limits collide: at 1:4, a 600 px short side is exactly a 2400 px long side. Anything narrower than 1:4 cannot satisfy both, so the cropper trims to 1:4 before scaling instead of emitting a rejected file. `tools/reference_spec.py` holds the numbers, and `GET /api/readiness` reports `reference size:<character>` so this cannot regress silently.
 
 ---
 
